@@ -209,12 +209,19 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         val request = PlayViewUniteReq.parseFrom(requestBytes)
         if (!request.hasVod()) return null
         val vod = request.vod
-        val epId = request.extraContentMap["ep_id"]?.toLongOrNull() ?: 0L
-        val seasonId = request.extraContentMap["season_id"]?.toLongOrNull() ?: 0L
-        val payload = requestParserPayload(
-            epId, seasonId, vod.cid, vod.qn, vod.fnver, vod.fnval, vod.forceHost, vod.fourk,
-        ) ?: return null
         val original = PlayViewUniteReply.parseFrom(replyBytes)
+        val supplementBytes = original.supplement.takeIf { original.hasSupplement() }?.value?.toByteArray()
+        val hostEpisode = supplementBytes?.let(::extractHostEpisode)
+        val requestedEpId = request.extraContentMap["ep_id"]?.toLongOrNull() ?: 0L
+        val epId = requestedEpId.takeIf { it != 0L } ?: (hostEpisode?.id ?: 0L)
+        val seasonId = request.extraContentMap["season_id"]?.toLongOrNull() ?: 0L
+        val cid = vod.cid.takeIf { it != 0L } ?: (hostEpisode?.cid ?: 0L)
+        if (hostEpisode != null) {
+            log("Bangumi MOSS supplement episode found: ep=${hostEpisode.id}, cid=${hostEpisode.cid}")
+        }
+        val payload = requestParserPayload(
+            epId, seasonId, cid, vod.qn, vod.fnver, vod.fnval, vod.forceHost, vod.fourk,
+        ) ?: return null
         val supplement = original.supplement.takeIf { original.hasSupplement() }?.let {
             runCatching { PlayViewReply.parseFrom(it.value) }.getOrNull()
         } ?: PlayViewReply.getDefaultInstance()
@@ -234,6 +241,29 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
             .build()
             .toByteArray()
     }.onFailure { log("Bangumi MOSS PlayerUnite fallback failed", it) }.getOrNull()
+
+    /**
+     * BBZQ deliberately keeps the PGC business payload opaque for cross-version
+     * compatibility. The installed Bilibili protobuf is authoritative here and
+     * exposes the episode data needed to call the legacy parser endpoint.
+     */
+    private fun extractHostEpisode(bytes: ByteArray): Episode? {
+        HOST_PLAY_VIEW_REPLIES.forEach { className ->
+            val episode = runCatching {
+                val replyClass = classLoader.loadClass(className)
+                val parseFrom = replyClass.methods.firstOrNull {
+                    it.name == "parseFrom" && it.parameterTypes.contentEquals(arrayOf(ByteArray::class.java))
+                } ?: return@runCatching null
+                val reply = parseFrom.invoke(null, bytes) ?: return@runCatching null
+                val info = reply.callMethod("getBusiness")?.callMethod("getEpisodeInfo") ?: return@runCatching null
+                val id = (info.callMethod("getEpId") as? Number)?.toLong() ?: 0L
+                val cid = (info.callMethod("getCid") as? Number)?.toLong() ?: 0L
+                Episode(id, cid).takeIf { it.id != 0L && it.cid != 0L }
+            }.getOrNull()
+            if (episode != null) return episode
+        }
+        return null
+    }
 
     private fun requestParserPayload(
         epId: Long, seasonId: Long, cid: Long, qn: Long, fnver: Int, fnval: Int,
@@ -457,6 +487,10 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         val PGC_PLAY_VIEW_REQUESTS = setOf(
             "com.bapis.bilibili.pgc.gateway.player.v1.PlayViewReq",
             "com.bapis.bilibili.pgc.gateway.player.v2.PlayViewReq",
+        )
+        val HOST_PLAY_VIEW_REPLIES = arrayOf(
+            "com.bapis.bilibili.pgc.gateway.player.v1.PlayViewReply",
+            "com.bapis.bilibili.pgc.gateway.player.v2.PlayViewReply",
         )
         val MOSS_METHOD_NAMES = setOf(
             "playView",

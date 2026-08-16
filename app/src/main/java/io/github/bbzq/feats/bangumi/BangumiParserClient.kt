@@ -11,6 +11,10 @@ import java.nio.charset.StandardCharsets
 /** Direct client for servers compatible with BiliRoaming's regional parser protocol. */
 internal object BangumiParserClient {
     private const val TIMEOUT_MS = 10_000
+    // Current Android PGC endpoints reject unsigned legacy requests when the
+    // app identity is omitted. This is also the identity used by the host app.
+    private const val MAIN_APP_KEY = "1d8b6e7d45233436"
+    private const val MAIN_BUILD = "9060300"
 
     data class Result(
         val body: String?,
@@ -41,6 +45,11 @@ internal object BangumiParserClient {
             params.putIfAbsent("appkey", "7d089525d3611b1c")
             params.putIfAbsent("build", "1001310")
             params.putIfAbsent("mobi_app", "bstar_a")
+            params.putIfAbsent("platform", "android")
+        } else {
+            params.putIfAbsent("appkey", MAIN_APP_KEY)
+            params.putIfAbsent("build", MAIN_BUILD)
+            params.putIfAbsent("mobi_app", "android")
             params.putIfAbsent("platform", "android")
         }
         return request(host, region.playUrlPath, sign(params, classLoader), credential?.platform ?: region.defaultPlatform, useHttps)
@@ -91,9 +100,10 @@ internal object BangumiParserClient {
             "/intl/gateway/v2/ogv/view/app/season"
         } else {
             params["area"] = region.name.lowercase()
+            params.putIfAbsent("appkey", MAIN_APP_KEY)
             params.putIfAbsent("mobi_app", "android")
             params.putIfAbsent("platform", "android")
-            params.putIfAbsent("build", "6400000")
+            params.putIfAbsent("build", MAIN_BUILD)
             "/pgc/view/v2/app/season"
         }
         return request(host, path, sign(params, classLoader), credential?.platform ?: region.defaultPlatform, useHttps)
