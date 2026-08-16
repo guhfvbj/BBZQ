@@ -1,6 +1,7 @@
 package io.github.bbzq.feats.hook
 
 import android.icu.text.Transliterator
+import io.github.bbzq.AccessKeyRepository
 import io.github.bbzq.BangumiRegion
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.BaseRoamingHook
@@ -54,6 +55,11 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         val uri = runCatching { URI(original) }.getOrNull() ?: return
         val path = uri.path ?: return
         val query = parseQuery(uri.rawQuery)
+        // Recent Bilibili builds no longer expose a stable BiliAccounts
+        // accessor, but their normal authenticated REST traffic still carries
+        // the same short-lived key. Capture it before any route decision so a
+        // later MOSS playback fallback can retain the viewer's VIP identity.
+        AccessKeyRepository.capture(prefs, query["access_key"])
         val route = when {
             path.endsWith("/pgc/player/api/playurl") -> selectPlayRoute(query)
             path.endsWith("/pgc/view/v2/app/season") -> selectSeasonRoute(query, isInternational = false)

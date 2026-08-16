@@ -22,6 +22,13 @@ object AccessKeyRepository {
             ?.takeIf(::looksLikeAccessKey)
     }
 
+    /** Cache a credential observed on an already-authenticated host request. */
+    fun capture(prefs: SharedPreferences, value: String?) {
+        value?.takeIf(::looksLikeAccessKey)?.let { accessKey ->
+            prefs.edit().putString(ModuleSettings.KEY_LAST_ACCESS_KEY, accessKey).apply()
+        }
+    }
+
     fun looksLikeAccessKey(value: String): Boolean =
         ACCESS_KEY_PATTERN.matches(value)
 
