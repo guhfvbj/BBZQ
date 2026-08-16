@@ -236,6 +236,14 @@ internal object BangumiParserClient {
     }
 
     private fun sign(params: Map<String, String>, classLoader: ClassLoader): String {
+        // Requests intercepted from the host app already carry a time-bound
+        // signature. BiliRoaming removes both fields before asking LibBili to
+        // sign the modified query; retaining either makes the regenerated URL
+        // invalid after changing its area or result type.
+        val unsignedParams = LinkedHashMap(params).apply {
+            remove("sign")
+            remove("ts")
+        }
         val signed = runCatching {
             val signedQuery = classLoader.loadClass("com.bilibili.nativelibrary.SignedQuery")
             val libBili = classLoader.loadClass("com.bilibili.nativelibrary.LibBili")
@@ -243,9 +251,9 @@ internal object BangumiParserClient {
                 it.parameterTypes.contentEquals(arrayOf(Map::class.java)) && it.returnType == signedQuery
             } ?: return@runCatching null
             signer.isAccessible = true
-            signer.invoke(null, params)?.toString()
+            signer.invoke(null, unsignedParams)?.toString()
         }.getOrNull()
-        return signed?.takeIf { it.contains('=') } ?: encode(params)
+        return signed?.takeIf { it.contains('=') } ?: encode(unsignedParams)
     }
 
     private fun parseCompatibility(raw: String?): Compatibility? = runCatching {
