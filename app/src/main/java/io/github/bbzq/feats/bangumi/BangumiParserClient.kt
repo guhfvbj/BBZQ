@@ -212,6 +212,13 @@ internal object BangumiParserClient {
         if (declared != null && !declared.capabilities.containsAll(required)) {
             return ProbeResult("检查失败：服务器缺少${(required - declared.capabilities).joinToString("、")}接口")
         }
+        // A BBZQ-aware backend has already declared its route contract. The old
+        // fallback probe used an unsigned, synthetic playurl and was rejected
+        // by current Bilibili APIs with -400, producing a false failure even
+        // when signed app requests worked normally.
+        if (declared != null) {
+            return ProbeResult("BBZQ兼容检查通过：${region.label}服务器已声明所需接口")
+        }
         val params = if (region == BangumiRegion.TH) {
             mapOf("ep_id" to "285145", "s_locale" to "zh_SG")
         } else {
@@ -223,7 +230,6 @@ internal object BangumiParserClient {
         val result = request(host, region.playUrlPath, encode(params), credential?.platform ?: region.defaultPlatform, useHttps)
         return when {
             result.body == null -> ProbeResult("连接失败：${result.error ?: "服务器无响应"}")
-            result.isSuccess && declared != null -> ProbeResult("BBZQ兼容检查通过：${region.label}服务器和播放接口可用")
             result.isSuccess -> ProbeResult("基础连接通过：服务器未提供BBZQ兼容声明，仅验证了播放接口")
             else -> ProbeResult("服务器可连接，但返回了业务错误：${result.body.take(160)}")
         }
