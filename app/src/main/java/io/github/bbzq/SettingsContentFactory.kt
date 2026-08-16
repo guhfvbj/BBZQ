@@ -1601,10 +1601,15 @@ class SettingsContentFactory(
             val credential = ModuleSettings.getBangumiServerCredential(prefs, region)
             setText(credential?.let { "${it.accessKey};${it.platform.orEmpty()}" }.orEmpty())
         }
+        val httpsCheckBox = CheckBox(context).apply {
+            text = context.getString(R.string.bangumi_server_https)
+            isChecked = ModuleSettings.isBangumiServerHttps(prefs, region)
+        }
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), 0, dp(24), 0)
             addView(hostInput)
+            addView(httpsCheckBox)
             addView(credentialInput)
         }
         val dialog = AlertDialog.Builder(context)
@@ -1629,6 +1634,7 @@ class SettingsContentFactory(
                 }
                 prefs.edit()
                     .putString(region.serverKey, host)
+                    .putBoolean(region.httpsKey, httpsCheckBox.isChecked)
                     .putString(region.credentialKey, rawCredential.ifEmpty { null })
                     .apply()
                 refresh()
@@ -1647,7 +1653,7 @@ class SettingsContentFactory(
                 }
                 dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = false
                 Thread {
-                    val result = BangumiParserClient.probe(region, host, rawCredential)
+                    val result = BangumiParserClient.probe(region, host, httpsCheckBox.isChecked, rawCredential)
                     Handler(Looper.getMainLooper()).post {
                         dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = true
                         Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
@@ -2243,7 +2249,10 @@ class SettingsContentFactory(
             summary.text = if (host == null) {
                 context.getString(R.string.bangumi_server_empty_summary)
             } else {
-                context.getString(R.string.bangumi_server_current_summary, host)
+                context.getString(
+                    R.string.bangumi_server_current_summary,
+                    "${if (ModuleSettings.isBangumiServerHttps(prefs, region)) "https" else "http"}://$host",
+                )
             }
         }
         bottomBarItemCheckBoxes.forEach { (id, checkBox) ->

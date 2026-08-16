@@ -4,13 +4,14 @@ import io.github.bbzq.ModuleSettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.net.URI
 
 class BangumiParserClientTest {
     @Test
-    fun `normalizes https parser host only`() {
+    fun `normalizes http and https parser hosts`() {
         assertEquals("parser.example:8443", ModuleSettings.normalizeBangumiServerHost("https://Parser.Example:8443/"))
         assertEquals("parser.example", ModuleSettings.normalizeBangumiServerHost("parser.example"))
-        assertNull(ModuleSettings.normalizeBangumiServerHost("http://parser.example"))
+        assertEquals("parser.example", ModuleSettings.normalizeBangumiServerHost("http://parser.example"))
         assertNull(ModuleSettings.normalizeBangumiServerHost("https://parser.example/pgc/player/api/playurl"))
     }
 
@@ -25,5 +26,21 @@ class BangumiParserClientTest {
     @Test
     fun `leaves malformed thailand response unchanged`() {
         assertEquals("not-json", BangumiParserClient.convertThailandPlayUrl("not-json"))
+    }
+
+    @Test
+    fun `builds http parser and grpc proxy urls`() {
+        assertEquals(
+            "http://parser.example/pgc/player/api/playurl?ep_id=1",
+            BangumiParserClient.buildUrl("parser.example", "/pgc/player/api/playurl", "ep_id=1", false),
+        )
+        assertEquals(
+            "https://parser.example/bilibili.pgc.gateway.player.v2.PlayURL/PlayView?x=1",
+            BangumiParserClient.buildGrpcProxyUrl(
+                "parser.example",
+                URI("https://grpc.biliapi.net/bilibili.pgc.gateway.player.v2.PlayURL/PlayView?x=1"),
+                true,
+            ),
+        )
     }
 }

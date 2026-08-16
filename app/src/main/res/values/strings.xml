@@ -133,14 +133,15 @@
 
     <!-- 分享與複製 -->
     <string name="bangumi_unlock_title">番剧解锁</string>
-    <string name="bangumi_unlock_summary">在首页显示港澳台和东南亚追番入口，并在播放受限番剧时使用已配置的解析服务器。</string>
+    <string name="bangumi_unlock_summary">在首页显示港澳台番剧和国际影视入口，并为地区内容使用已配置的解析服务器。</string>
     <string name="bangumi_server_title">%1$s解析服务器</string>
     <string name="bangumi_server_empty_summary">未配置。仅在命中已支持的番剧请求时使用已配置的区域服务器。</string>
     <string name="bangumi_server_current_summary">当前：%1$s</string>
     <string name="bangumi_server_dialog_title">配置%1$s解析服务器</string>
-    <string name="bangumi_server_dialog_message">服务器必须支持 HTTPS。第二行可选填写“access key;平台标识”；访问密钥不会导出到配置备份。</string>
+    <string name="bangumi_server_dialog_message">填写域名或完整地址。可关闭 HTTPS 以使用 HTTP；第二行可选填写“access key;平台标识”，访问密钥不会导出到配置备份。</string>
     <string name="bangumi_server_credential_hint">访问密钥;平台标识（可选）</string>
-    <string name="bangumi_server_invalid">请输入有效的 HTTPS 服务器地址，且不要包含路径或参数。</string>
+    <string name="bangumi_server_invalid">请输入有效的 HTTP 或 HTTPS 服务器地址，且不要包含路径或参数。</string>
+    <string name="bangumi_server_https">使用 HTTPS</string>
     <string name="bangumi_server_credential_invalid">访问密钥不能包含空格；平台标识不能包含空格或分号。</string>
     <string name="bangumi_server_test">测试连接</string>
     <string name="bangumi_subtitle_hant_to_hans_title">繁体字幕转简体</string>

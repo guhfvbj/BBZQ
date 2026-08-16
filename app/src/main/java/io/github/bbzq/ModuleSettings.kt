@@ -6,13 +6,14 @@ enum class BangumiRegion(
     val label: String,
     val serverKey: String,
     val credentialKey: String,
+    val httpsKey: String,
     val defaultPlatform: String,
     val playUrlPath: String,
 ) {
-    CN("大陆", "bangumi_server_cn", "bangumi_server_cn_credential", "android", "/pgc/player/api/playurl"),
-    HK("港澳", "bangumi_server_hk", "bangumi_server_hk_credential", "android", "/pgc/player/api/playurl"),
-    TW("台湾", "bangumi_server_tw", "bangumi_server_tw_credential", "android", "/pgc/player/api/playurl"),
-    TH("东南亚", "bangumi_server_th", "bangumi_server_th_credential", "bstar_a", "/intl/gateway/v2/ogv/playurl"),
+    CN("大陆", "bangumi_server_cn", "bangumi_server_cn_credential", "bangumi_server_cn_https", "android", "/pgc/player/api/playurl"),
+    HK("港澳", "bangumi_server_hk", "bangumi_server_hk_credential", "bangumi_server_hk_https", "android", "/pgc/player/api/playurl"),
+    TW("台湾", "bangumi_server_tw", "bangumi_server_tw_credential", "bangumi_server_tw_https", "android", "/pgc/player/api/playurl"),
+    TH("东南亚", "bangumi_server_th", "bangumi_server_th_credential", "bangumi_server_th_https", "bstar_a", "/intl/gateway/v2/ogv/playurl"),
 }
 
 data class BangumiServerCredential(
@@ -326,6 +327,9 @@ object ModuleSettings {
         BangumiRegion.entries.forEach { region ->
             add(ExportableConfigSpec(region.serverKey, ExportableValueType.STRING) { prefs ->
                 getBangumiServerHost(prefs, region).orEmpty()
+            })
+            add(ExportableConfigSpec(region.httpsKey, ExportableValueType.BOOLEAN) { prefs ->
+                isBangumiServerHttps(prefs, region)
             })
         }
         add(ExportableConfigSpec(KEY_HOME_RECOMMEND_TITLE_KEYWORDS, ExportableValueType.STRING) { it.getString(KEY_HOME_RECOMMEND_TITLE_KEYWORDS, "").orEmpty() })
@@ -694,6 +698,9 @@ object ModuleSettings {
     fun getBangumiServerHost(prefs: SharedPreferences, region: BangumiRegion): String? =
         normalizeBangumiServerHost(prefs.getString(region.serverKey, null))
 
+    fun isBangumiServerHttps(prefs: SharedPreferences, region: BangumiRegion): Boolean =
+        prefs.getBoolean(region.httpsKey, true)
+
     fun getBangumiServerCredential(prefs: SharedPreferences, region: BangumiRegion): BangumiServerCredential? =
         parseBangumiServerCredential(prefs.getString(region.credentialKey, null))
 
@@ -702,7 +709,8 @@ object ModuleSettings {
         if (raw.isEmpty()) return null
         val normalized = if (raw.contains("://")) raw else "https://$raw"
         val uri = runCatching { java.net.URI(normalized) }.getOrNull() ?: return null
-        if (!uri.scheme.equals("https", ignoreCase = true) || uri.host.isNullOrBlank() ||
+        if ((!uri.scheme.equals("https", ignoreCase = true) && !uri.scheme.equals("http", ignoreCase = true)) ||
+            uri.host.isNullOrBlank() ||
             uri.userInfo != null || uri.rawQuery != null || uri.rawFragment != null ||
             (uri.rawPath != null && uri.rawPath !in setOf("", "/"))
         ) return null

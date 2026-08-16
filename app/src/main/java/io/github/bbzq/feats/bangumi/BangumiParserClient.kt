@@ -4,6 +4,7 @@ import io.github.bbzq.BangumiRegion
 import io.github.bbzq.BangumiServerCredential
 import io.github.bbzq.ModuleSettings
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URLEncoder
 import java.net.URL
 import java.nio.charset.StandardCharsets
@@ -21,12 +22,18 @@ internal object BangumiParserClient {
 
     data class ProbeResult(val message: String)
 
+    data class Compatibility(
+        val region: BangumiRegion,
+        val capabilities: Set<String>,
+    )
+
     fun requestPlayUrl(
         region: BangumiRegion,
         host: String,
         query: Map<String, String>,
         credential: BangumiServerCredential?,
         classLoader: ClassLoader,
+        useHttps: Boolean = true,
     ): Result {
         val params = LinkedHashMap(query)
         params["area"] = region.name.lowercase()
@@ -37,7 +44,7 @@ internal object BangumiParserClient {
             params.putIfAbsent("mobi_app", "bstar_a")
             params.putIfAbsent("platform", "android")
         }
-        return request(host, region.playUrlPath, sign(params, classLoader), credential?.platform ?: region.defaultPlatform)
+        return request(host, region.playUrlPath, sign(params, classLoader), credential?.platform ?: region.defaultPlatform, useHttps)
     }
 
     fun requestSearch(
@@ -46,6 +53,7 @@ internal object BangumiParserClient {
         query: Map<String, String>,
         credential: BangumiServerCredential?,
         classLoader: ClassLoader,
+        useHttps: Boolean = true,
     ): Result {
         val params = LinkedHashMap(query)
         val path = if (region == BangumiRegion.TH) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
@@ -64,7 +72,7 @@ internal object BangumiParserClient {
             params.putIfAbsent("build", "6400000")
         }
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
-        return request(host, path, sign(params, classLoader), credential?.platform ?: region.defaultPlatform)
+        return request(host, path, sign(params, classLoader), credential?.platform ?: region.defaultPlatform, useHttps)
     }
 
     fun buildPlayUrl(
@@ -73,6 +81,7 @@ internal object BangumiParserClient {
         query: Map<String, String>,
         credential: BangumiServerCredential?,
         classLoader: ClassLoader,
+        useHttps: Boolean = true,
     ): String {
         val params = LinkedHashMap(query)
         params["area"] = region.name.lowercase()
@@ -83,7 +92,7 @@ internal object BangumiParserClient {
             params.putIfAbsent("mobi_app", "bstar_a")
             params.putIfAbsent("platform", "android")
         }
-        return "https://$host${region.playUrlPath}?${sign(params, classLoader)}"
+        return buildUrl(host, region.playUrlPath, sign(params, classLoader), useHttps)
     }
 
     fun buildSearchUrl(
@@ -92,6 +101,7 @@ internal object BangumiParserClient {
         query: Map<String, String>,
         credential: BangumiServerCredential?,
         classLoader: ClassLoader,
+        useHttps: Boolean = true,
     ): String {
         val params = LinkedHashMap(query)
         val path = if (region == BangumiRegion.TH) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
@@ -103,8 +113,55 @@ internal object BangumiParserClient {
             params.putIfAbsent("build", "6400000")
         }
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
-        return "https://$host$path?${sign(params, classLoader)}"
+        return buildUrl(host, path, sign(params, classLoader), useHttps)
     }
+
+    fun buildSeasonUrl(
+        region: BangumiRegion,
+        host: String,
+        query: Map<String, String>,
+        credential: BangumiServerCredential?,
+        classLoader: ClassLoader,
+        useHttps: Boolean,
+    ): String {
+        val params = LinkedHashMap(query).apply {
+            credential?.accessKey?.takeIf(String::isNotBlank)?.let { put("access_key", it) }
+            if (region == BangumiRegion.TH) {
+                putIfAbsent("mobi_app", "bstar_a")
+                putIfAbsent("build", "1001310")
+                putIfAbsent("s_locale", "zh_SG")
+            } else {
+                put("area", region.name.lowercase())
+                putIfAbsent("build", "6400000")
+            }
+        }
+        val path = if (region == BangumiRegion.TH) {
+            "/intl/gateway/v2/ogv/view/app/season"
+        } else {
+            "/pgc/view/v2/app/season"
+        }
+        return buildUrl(host, path, sign(params, classLoader), useHttps)
+    }
+
+    fun buildSubtitleUrl(
+        host: String,
+        query: Map<String, String>,
+        credential: BangumiServerCredential?,
+        classLoader: ClassLoader,
+        useHttps: Boolean,
+    ): String {
+        val params = LinkedHashMap(query).apply {
+            credential?.accessKey?.takeIf(String::isNotBlank)?.let { put("access_key", it) }
+            putIfAbsent("mobi_app", "bstar_a")
+            putIfAbsent("build", "1001310")
+            putIfAbsent("s_locale", "zh_SG")
+        }
+        return buildUrl(host, "/intl/gateway/v2/app/subtitle", sign(params, classLoader), useHttps)
+    }
+
+    /** Keeps the host client's protobuf request and lets the parser proxy only its transport. */
+    fun buildGrpcProxyUrl(host: String, original: URI, useHttps: Boolean): String =
+        buildUrl(host, original.rawPath.orEmpty(), original.rawQuery.orEmpty(), useHttps)
 
     fun convertThailandPlayUrl(raw: String): String = runCatching {
         val input = org.json.JSONObject(raw)
@@ -141,8 +198,20 @@ internal object BangumiParserClient {
             .toString()
     }.getOrDefault(raw)
 
-    fun probe(region: BangumiRegion, host: String, rawCredential: String): ProbeResult {
+    fun probe(region: BangumiRegion, host: String, useHttps: Boolean, rawCredential: String): ProbeResult {
         val credential = ModuleSettings.parseBangumiServerCredential(rawCredential)
+        val compatibility = request(host, "/api/bbzq/compat", "", region.defaultPlatform, useHttps, mapOf("x-bbzq-probe" to "1"))
+        val declared = parseCompatibility(compatibility.body)
+        if (declared != null && declared.region != region) {
+            return ProbeResult("检查失败：服务器声明的地区是${declared.region.label}，不能用于${region.label}")
+        }
+        val required = buildSet {
+            addAll(setOf("search", "season", "playurl"))
+            if (region == BangumiRegion.TH) add("subtitle")
+        }
+        if (declared != null && !declared.capabilities.containsAll(required)) {
+            return ProbeResult("检查失败：服务器缺少${(required - declared.capabilities).joinToString("、")}接口")
+        }
         val params = if (region == BangumiRegion.TH) {
             mapOf("ep_id" to "285145", "s_locale" to "zh_SG")
         } else {
@@ -151,10 +220,11 @@ internal object BangumiParserClient {
             put("area", region.name.lowercase())
             credential?.accessKey?.let { put("access_key", it) }
         }
-        val result = request(host, region.playUrlPath, encode(params), credential?.platform ?: region.defaultPlatform)
+        val result = request(host, region.playUrlPath, encode(params), credential?.platform ?: region.defaultPlatform, useHttps)
         return when {
             result.body == null -> ProbeResult("连接失败：${result.error ?: "服务器无响应"}")
-            result.isSuccess -> ProbeResult("连接成功：服务器返回可用播放地址")
+            result.isSuccess && declared != null -> ProbeResult("BBZQ兼容检查通过：${region.label}服务器和播放接口可用")
+            result.isSuccess -> ProbeResult("基础连接通过：服务器未提供BBZQ兼容声明，仅验证了播放接口")
             else -> ProbeResult("服务器可连接，但返回了业务错误：${result.body.take(160)}")
         }
     }
@@ -172,15 +242,38 @@ internal object BangumiParserClient {
         return signed?.takeIf { it.contains('=') } ?: encode(params)
     }
 
-    private fun request(host: String, path: String, query: String, platform: String): Result {
+    private fun parseCompatibility(raw: String?): Compatibility? = runCatching {
+        val data = org.json.JSONObject(raw ?: return null).optJSONObject("data") ?: return null
+        if (data.optString("protocol") != "bbzq-bangumi/1") return null
+        val region = BangumiRegion.entries.firstOrNull { it.name.equals(data.optString("region"), true) } ?: return null
+        val capabilities = data.optJSONArray("capabilities")?.let { values ->
+            buildSet { for (index in 0 until values.length()) add(values.optString(index)) }
+        }.orEmpty()
+        Compatibility(region, capabilities)
+    }.getOrNull()
+
+    internal fun buildUrl(host: String, path: String, query: String, useHttps: Boolean): String {
+        val scheme = if (useHttps) "https" else "http"
+        return "$scheme://$host$path${query.takeIf(String::isNotBlank)?.let { "?$it" }.orEmpty()}"
+    }
+
+    private fun request(
+        host: String,
+        path: String,
+        query: String,
+        platform: String,
+        useHttps: Boolean,
+        extraHeaders: Map<String, String> = emptyMap(),
+    ): Result {
         return runCatching {
-            val url = URL("https://$host$path?$query")
+            val url = URL(buildUrl(host, path, query, useHttps))
             (url.openConnection() as HttpURLConnection).run {
                 requestMethod = "GET"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS
                 setRequestProperty("Accept-Encoding", "identity")
                 setRequestProperty("platform-from-bbzq", platform)
+                extraHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
                 val code = responseCode
                 val stream = if (code in 200..299) inputStream else errorStream
                 val body = stream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }

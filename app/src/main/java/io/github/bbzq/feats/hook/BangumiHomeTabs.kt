@@ -13,7 +13,7 @@ internal object BangumiHomeTabs {
     val specs = listOf(
         BangumiHomeTabSpec(
             id = "60",
-            title = "追番（港澳台）",
+            title = "番剧（港澳台）",
             uri = "bilibili://following/home_activity_tab/6544",
             reporterId = "bangumi",
             position = 60,
@@ -21,13 +21,15 @@ internal object BangumiHomeTabs {
         ),
         BangumiHomeTabSpec(
             id = "70",
-            title = "追番（东南亚）",
-            // Bilibili International has no stable, documented domestic-app scheme. Host web routing
-            // keeps this usable across current domestic clients instead of relying on an obsolete URI.
-            uri = "https://www.bilibili.tv/zh-Hans",
+            title = "影视（国际）",
+            uri = "bilibili://browser?url=https%3A%2F%2Fwww.bilibili.tv%2Fzh-Hans",
             reporterId = "bangumi",
             position = 70,
-            existingUris = setOf("https://www.bilibili.tv/zh-Hans", "https://www.bilibili.tv/zh-Hans/"),
+            existingUris = setOf(
+                "bilibili://browser?url=https%3A%2F%2Fwww.bilibili.tv%2Fzh-Hans",
+                "https://www.bilibili.tv/zh-Hans",
+                "https://www.bilibili.tv/zh-Hans/",
+            ),
         ),
     )
 
