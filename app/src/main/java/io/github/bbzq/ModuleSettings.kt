@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 
 object ModuleSettings {
     const val PREFS_NAME = "bbzq_settings"
+    const val KEY_ADD_BANGUMI = "add_bangumi"
     const val KEY_MINI_PROGRAM_ENABLED = "mini_program"
     const val KEY_PURIFY_SHARE_ENABLED = "purify_share"
     const val KEY_SKIP_REWARD_AD_ENABLED = "skip_reward_ad"
@@ -198,6 +199,7 @@ object ModuleSettings {
     )
 
     val exportableSwitchSpecs = listOf(
+        ExportableConfigSpec(KEY_ADD_BANGUMI, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_ADD_BANGUMI, false) },
         ExportableConfigSpec(KEY_MINI_PROGRAM_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_MINI_PROGRAM_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_SHARE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_SHARE_ENABLED, false) },
         ExportableConfigSpec(KEY_SKIP_REWARD_AD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SKIP_REWARD_AD_ENABLED, false) },
@@ -647,6 +649,9 @@ object ModuleSettings {
 
     fun isPurifyShareEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_PURIFY_SHARE_ENABLED, false)
+
+    fun isAddBangumiEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_ADD_BANGUMI, false)
 
     fun isCustomBottomBarEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_CUSTOM_BOTTOM_BAR_ENABLED, false)

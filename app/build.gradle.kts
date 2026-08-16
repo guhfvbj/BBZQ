@@ -161,4 +161,5 @@ dependencies {
     implementation(libs.libxposed.service)
     implementation(libs.dexkit)
     implementation(libs.okhttp)
+    testImplementation(libs.junit)
 }

@@ -210,6 +210,12 @@ class SettingsContentFactory(
     private fun shareRows(): List<View> {
         return listOf(
             createSwitchRow(
+                context.getString(R.string.bangumi_unlock_title),
+                context.getString(R.string.bangumi_unlock_summary),
+                ModuleSettings.KEY_ADD_BANGUMI,
+                false,
+            ),
+            createSwitchRow(
                 context.getString(R.string.share_purify_title),
                 context.getString(R.string.share_purify_summary),
                 ModuleSettings.KEY_PURIFY_SHARE_ENABLED,

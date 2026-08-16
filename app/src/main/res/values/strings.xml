@@ -131,6 +131,8 @@
     <string name="section_story_purify">竖屏视频</string>
 
     <!-- 分享與複製 -->
+    <string name="bangumi_unlock_title">番剧解锁</string>
+    <string name="bangumi_unlock_summary">在首页标签显示大陆和港澳台番剧入口；播放解析服务器将在后续版本适配。</string>
     <string name="share_purify_title">净化分享</string>
     <string name="share_purify_summary">将 b23.tv 等短链还原为原始链接，保留必要参数。</string>
     <string name="share_mini_program_title">普通链接分享</string>
