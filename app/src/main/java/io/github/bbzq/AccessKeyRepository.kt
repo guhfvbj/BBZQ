@@ -33,5 +33,8 @@ object AccessKeyRepository {
     fun looksLikeAccessKey(value: String): Boolean =
         ACCESS_KEY_PATTERN.matches(value)
 
-    private val ACCESS_KEY_PATTERN = Regex("[0-9a-fA-F]{32}")
+    // Current Bilibili clients use a long opaque access token rather than the
+    // old 32-character hexadecimal key. Keep validation strict enough to
+    // reject malformed input without discarding the host's valid login token.
+    private val ACCESS_KEY_PATTERN = Regex("[A-Za-z0-9._~-]{16,1024}")
 }
