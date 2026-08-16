@@ -10,23 +10,19 @@ import io.github.bbzq.feats.findClassOrNull
 import io.github.bbzq.feats.hookAfter
 import io.github.bbzq.feats.hookBefore
 import io.github.bbzq.feats.bangumi.BangumiParserClient
+import io.github.bbzq.feats.bangumi.BangumiRegionContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Routes region-specific JSON and gRPC endpoints to a compatible parser.
+ * Routes region-specific JSON endpoints to a compatible parser.
  * The original request is left intact whenever a route cannot be rebuilt.
  */
 class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
-    private val episodeRegions = ConcurrentHashMap<String, BangumiRegion>()
-    private val seasonRegions = ConcurrentHashMap<String, BangumiRegion>()
     private val pendingSearchRegion = ThreadLocal<BangumiRegion?>()
-    private val activeRegion = AtomicReference<ActiveRegion?>(null)
 
     override fun startHook() {
         if (env.processName != env.packageName || !ModuleSettings.isAddBangumiEnabled(prefs)) return
@@ -60,8 +56,6 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         val query = parseQuery(uri.rawQuery)
         val route = when {
             path.endsWith("/pgc/player/api/playurl") -> selectPlayRoute(query)
-            path.contains("/bilibili.pgc.gateway.player.v1.PlayURL/") ||
-                path.contains("/bilibili.pgc.gateway.player.v2.PlayURL/") -> selectGrpcPlayRoute(query)
             path.endsWith("/pgc/view/v2/app/season") -> selectSeasonRoute(query, isInternational = false)
             path.endsWith("/intl/gateway/v2/ogv/view/app/season") -> selectSeasonRoute(query, isInternational = true)
             path.endsWith("/intl/gateway/v2/app/subtitle") -> selectSubtitleRoute(query)
@@ -73,7 +67,6 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
             RouteKind.SEARCH -> BangumiParserClient.buildSearchUrl(route.region, route.host, query, route.credential, classLoader, route.useHttps)
             RouteKind.SEASON -> BangumiParserClient.buildSeasonUrl(route.region, route.host, query, route.credential, classLoader, route.useHttps)
             RouteKind.SUBTITLE -> BangumiParserClient.buildSubtitleUrl(route.host, query, route.credential, classLoader, route.useHttps)
-            RouteKind.GRPC_PLAY -> BangumiParserClient.buildGrpcProxyUrl(route.host, uri, route.useHttps)
         }
         val httpUrl = runCatching {
             val type = classLoader.findClassOrNull("okhttp3.HttpUrl") ?: return@runCatching null
@@ -83,24 +76,16 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         setParserHeader(builder, route.credential?.platform ?: route.region.defaultPlatform)
         if (route.kind == RouteKind.SEARCH) pendingSearchRegion.set(route.region)
         if (route.kind == RouteKind.SEASON) activateRegion(route.region)
-        query["ep_id"]?.takeIf(String::isNotBlank)?.let { episodeRegions[it] = route.region }
-        query["season_id"]?.takeIf(String::isNotBlank)?.let { seasonRegions[it] = route.region }
+        BangumiRegionContext.recordEpisode(query["ep_id"], route.region)
+        BangumiRegionContext.recordSeason(query["season_id"], route.region)
     }
 
     private fun selectPlayRoute(query: Map<String, String>): Route? {
-        val region = query["ep_id"]?.let(episodeRegions::get)
+        val region = query["ep_id"]?.let(::findEpisodeRegion)
             ?: currentActiveRegion()
             ?: defaultMainRegion()
         return region?.let(::routeFor)
             ?.copy(kind = RouteKind.PLAY)
-    }
-
-    private fun selectGrpcPlayRoute(query: Map<String, String>): Route? {
-        val region = query["ep_id"]?.let(episodeRegions::get)
-            ?: currentActiveRegion()
-            ?: defaultMainRegion()
-            ?: return null
-        return routeFor(region)?.copy(kind = RouteKind.GRPC_PLAY)
     }
 
     private fun selectSearchRoute(query: Map<String, String>): Route? = when (query["type"]) {
@@ -110,14 +95,14 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }?.copy(kind = RouteKind.SEARCH)
 
     private fun selectSeasonRoute(query: Map<String, String>, isInternational: Boolean): Route? {
-        val region = query["ep_id"]?.let(episodeRegions::get)
-            ?: query["season_id"]?.let(seasonRegions::get)
+        val region = query["ep_id"]?.let(::findEpisodeRegion)
+            ?: query["season_id"]?.let(::findSeasonRegion)
             ?: if (isInternational) BangumiRegion.TH.takeIf { routeFor(it) != null } else defaultMainRegion()
         return region?.let(::routeFor)?.copy(kind = RouteKind.SEASON)
     }
 
     private fun selectSubtitleRoute(query: Map<String, String>): Route? =
-        (query["ep_id"]?.let(episodeRegions::get)
+        (query["ep_id"]?.let(::findEpisodeRegion)
             ?: currentActiveRegion()
             ?: BangumiRegion.TH.takeIf { routeFor(it) != null })
             ?.takeIf { it == BangumiRegion.TH }
@@ -147,7 +132,7 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     private fun activateRegion(region: BangumiRegion) {
-        activeRegion.set(ActiveRegion(region, System.currentTimeMillis() + ACTIVE_REGION_TTL_MS))
+        BangumiRegionContext.activate(region)
     }
 
     private fun setParserHeader(builder: Any?, platform: String) {
@@ -158,12 +143,11 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         }.onFailure { log("BangumiParser header route failed", it) }
     }
 
-    private fun currentActiveRegion(): BangumiRegion? {
-        val current = activeRegion.get() ?: return null
-        if (current.expiresAtMillis > System.currentTimeMillis()) return current.region
-        activeRegion.compareAndSet(current, null)
-        return null
-    }
+    private fun currentActiveRegion(): BangumiRegion? = BangumiRegionContext.activeRegion()
+    private fun findEpisodeRegion(id: String): BangumiRegion? =
+        id.toLongOrNull()?.let(BangumiRegionContext::episodeRegion)
+    private fun findSeasonRegion(id: String): BangumiRegion? =
+        id.toLongOrNull()?.let(BangumiRegionContext::seasonRegion)
 
     private fun transformResponse(raw: String): String {
         var output = raw
@@ -197,9 +181,9 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
     private fun recordSearchRegions(raw: String, region: BangumiRegion) = runCatching {
         val root = JSONObject(raw)
         fun record(item: JSONObject) {
-            item.optString("season_id").takeIf(String::isNotBlank)?.let { seasonRegions[it] = region }
-            item.optString("ep_id").takeIf(String::isNotBlank)?.let { episodeRegions[it] = region }
-            item.optString("param").takeIf { it.matches(Regex("\\d+")) }?.let { seasonRegions.putIfAbsent(it, region) }
+            BangumiRegionContext.recordSeason(item.optString("season_id"), region)
+            BangumiRegionContext.recordEpisode(item.optString("ep_id"), region)
+            item.optString("param").takeIf { it.matches(Regex("\\d+")) }?.let { BangumiRegionContext.recordSeason(it, region) }
             item.optJSONArray("episodes")?.let { episodes ->
                 for (index in 0 until episodes.length()) episodes.optJSONObject(index)?.let(::record)
             }
@@ -252,17 +236,11 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         val kind: RouteKind,
     )
 
-    private data class ActiveRegion(
-        val region: BangumiRegion,
-        val expiresAtMillis: Long,
-    )
-
-    private enum class RouteKind { PLAY, SEARCH, SEASON, SUBTITLE, GRPC_PLAY }
+    private enum class RouteKind { PLAY, SEARCH, SEASON, SUBTITLE }
 
     private companion object {
         const val AREA_HK_TW_SEARCH_TYPE = "1919"
         const val AREA_INTL_SEARCH_TYPE = "1920"
-        const val ACTIVE_REGION_TTL_MS = 5 * 60 * 1000L
         val areaSearchTypes = setOf(AREA_HK_TW_SEARCH_TYPE, AREA_INTL_SEARCH_TYPE)
     }
 }

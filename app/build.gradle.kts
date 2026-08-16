@@ -1,3 +1,4 @@
+import com.google.protobuf.gradle.*
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
 plugins {
@@ -7,6 +8,7 @@ plugins {
     id("org.lsposed.lsplugin.resopt") version "1.6" 
     id("org.lsposed.lsplugin.apksign") version "1.4"
     id("org.lsposed.lsplugin.apktransform") version "1.2" 
+    alias(libs.plugins.protobuf)
 }
 
 fun gitOutput(vararg args: String): String? {
@@ -151,6 +153,19 @@ android {
     }
 }
 
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:4.29.5"
+    }
+    generateProtoTasks {
+        all().forEach { task ->
+            task.builtins {
+                id("java") { option("lite") }
+            }
+        }
+    }
+}
+
 configurations.all {
     exclude("org.jetbrains.kotlin", "kotlin-stdlib-jdk7")
     exclude("org.jetbrains.kotlin", "kotlin-stdlib-jdk8")
@@ -161,5 +176,6 @@ dependencies {
     implementation(libs.libxposed.service)
     implementation(libs.dexkit)
     implementation(libs.okhttp)
+    implementation(libs.protobuf.javalite)
     testImplementation(libs.junit)
 }

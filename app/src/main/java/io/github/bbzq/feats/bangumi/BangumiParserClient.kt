@@ -4,7 +4,6 @@ import io.github.bbzq.BangumiRegion
 import io.github.bbzq.BangumiServerCredential
 import io.github.bbzq.ModuleSettings
 import java.net.HttpURLConnection
-import java.net.URI
 import java.net.URLEncoder
 import java.net.URL
 import java.nio.charset.StandardCharsets
@@ -158,10 +157,6 @@ internal object BangumiParserClient {
         }
         return buildUrl(host, "/intl/gateway/v2/app/subtitle", sign(params, classLoader), useHttps)
     }
-
-    /** Keeps the host client's protobuf request and lets the parser proxy only its transport. */
-    fun buildGrpcProxyUrl(host: String, original: URI, useHttps: Boolean): String =
-        buildUrl(host, original.rawPath.orEmpty(), original.rawQuery.orEmpty(), useHttps)
 
     fun convertThailandPlayUrl(raw: String): String = runCatching {
         val input = org.json.JSONObject(raw)
