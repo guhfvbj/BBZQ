@@ -40,12 +40,12 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
                 env.hookBefore(method) { param ->
                     val request = param.args.firstOrNull() ?: return@hookBefore
                     val callback = param.args.getOrNull(1) ?: return@hookBefore
-                    wrapCallback(callback, request)?.let { param.args[1] = it }
+                    wrapCallback(callback, request, method.name)?.let { param.args[1] = it }
                 }
                 env.hookAfter(method) { param ->
                     val request = param.args.firstOrNull() ?: return@hookAfter
-                    val response = param.result ?: return@hookAfter
-                    replaceIfBlocked(request, response)?.let { param.result = it }
+                    val response = param.result
+                    replaceIfBlocked(request, response, "direct:${method.name}")?.let { param.result = it }
                 }
                 installed++
             }.onFailure { log("Bangumi MOSS hook install failed", it) }
@@ -82,7 +82,7 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
             getters.any { it in setOf("getVod", "getAid", "getCid", "getEpId", "getIsNeedViewInfo") }
     }
 
-    private fun wrapCallback(callback: Any, request: Any): Any? {
+    private fun wrapCallback(callback: Any, request: Any, methodName: String): Any? {
         val primary = callback.javaClass.interfaces.firstOrNull { type ->
             type.methods.any { it.name == "onNext" && it.parameterCount == 1 }
         } ?: return null
@@ -91,7 +91,7 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
             (callback.javaClass.interfaces.toSet() + primary).toTypedArray(),
         ) { _, method, args ->
             if (method.name == "onNext" && args?.isNotEmpty() == true) {
-                replaceIfBlocked(request, args[0])?.let { replacement ->
+                replaceIfBlocked(request, args[0], "callback:$methodName")?.let { replacement ->
                     @Suppress("UNCHECKED_CAST")
                     (args as Array<Any?>)[0] = replacement
                 }
@@ -104,16 +104,36 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         }
     }
 
-    private fun replaceIfBlocked(request: Any, response: Any?): Any? {
-        if (response == null || !isRegionBlocked(response)) return null
-        val requestBytes = request.callMethod("toByteArray") as? ByteArray ?: return null
-        val replyBytes = response.callMethod("toByteArray") as? ByteArray ?: return null
+    private fun replaceIfBlocked(request: Any, response: Any?, source: String): Any? {
+        val requestKind = request.javaClass.name.substringAfterLast('.')
+        if (response == null) {
+            log("Bangumi MOSS [$source] no response; request=$requestKind")
+            return null
+        }
+        val blocked = isRegionBlocked(response)
+        log("Bangumi MOSS [$source] response=${response.javaClass.name.substringAfterLast('.')} request=$requestKind blocked=$blocked")
+        if (!blocked) return null
+        val requestBytes = request.callMethod("toByteArray") as? ByteArray
+        if (requestBytes == null) {
+            log("Bangumi MOSS [$source] fallback skipped: request cannot be serialized")
+            return null
+        }
+        val replyBytes = response.callMethod("toByteArray") as? ByteArray
+        if (replyBytes == null) {
+            log("Bangumi MOSS [$source] fallback skipped: response cannot be serialized")
+            return null
+        }
         val fallback = if (request.callMethod("getVod") != null) {
             fallbackUnite(requestBytes, replyBytes)
         } else {
             fallbackPlayView(requestBytes, replyBytes)
-        } ?: return null
-        return parseHostReply(response.javaClass, fallback)
+        } ?: run {
+            log("Bangumi MOSS [$source] fallback failed before host reconstruction")
+            return null
+        }
+        return parseHostReply(response.javaClass, fallback)?.also {
+            log("Bangumi MOSS [$source] fallback replacement created")
+        }
     }
 
     private fun isRegionBlocked(response: Any): Boolean = runCatching {
@@ -123,7 +143,22 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         val view = response.callMethod("getViewInfo")
         val dialogType = view?.callMethod("getDialog")?.callMethod("getType") as? String
         val endDialogType = view?.callMethod("getEndPage")?.callMethod("getDialog")?.callMethod("getType") as? String
-        dialogType == "area_limit" || endDialogType == "area_limit"
+        if (dialogType == "area_limit" || endDialogType == "area_limit") return@runCatching true
+
+        // PlayerUnite wraps the PGC PlayView response in Any.supplement.  On
+        // current clients the area-limit dialog is frequently present there,
+        // while the outer reply has neither a ViewInfo object nor a usable vod.
+        val bytes = response.callMethod("toByteArray") as? ByteArray ?: return@runCatching false
+        val unite = runCatching { PlayViewUniteReply.parseFrom(bytes) }.getOrNull()
+            ?: return@runCatching false
+        if (unite.hasSupplement()) {
+            val supplement = runCatching { PlayViewReply.parseFrom(unite.supplement.value) }.getOrNull()
+            if (supplement != null) {
+                if (!supplement.hasVideoInfo()) return@runCatching true
+                if (supplement.viewInfo.toByteArray().containsAscii("area_limit")) return@runCatching true
+            }
+        }
+        unite.viewInfo.toByteArray().containsAscii("area_limit")
     }.getOrDefault(false)
 
     private fun fallbackPlayView(requestBytes: ByteArray, replyBytes: ByteArray): ByteArray? = runCatching {
@@ -180,6 +215,7 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         )
         BangumiRegionContext.candidates(epId, seasonId).forEach { region ->
             val host = ModuleSettings.getBangumiServerHost(prefs, region) ?: return@forEach
+            log("Bangumi MOSS parser request: region=${region.name}, ep=$epId, season=$seasonId, cid=$cid")
             val result = BangumiParserClient.requestPlayUrl(
                 region, host, query, ModuleSettings.getBangumiServerCredential(prefs, region),
                 classLoader, ModuleSettings.isBangumiServerHttps(prefs, region),
@@ -192,7 +228,7 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
                 log("Bangumi MOSS fallback succeeded: region=" + region.name + ", ep=" + epId)
                 return payload
             }
-            log("Bangumi MOSS fallback rejected: region=" + region.name + ", ep=" + epId)
+            log("Bangumi MOSS fallback rejected: region=${region.name}, ep=$epId, transport=${result.error ?: "ok"}")
         }
         return null
     }
@@ -297,6 +333,15 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
 
     private fun JSONArray?.toFormats(): Map<Int, JSONObject> = buildMap {
         this@toFormats?.forEachObject { put(it.optInt("quality"), it) }
+    }
+
+    private fun ByteArray.containsAscii(value: String): Boolean {
+        val needle = value.encodeToByteArray()
+        if (needle.isEmpty() || size < needle.size) return false
+        for (start in 0..size - needle.size) {
+            if (needle.indices.all { offset -> this[start + offset] == needle[offset] }) return true
+        }
+        return false
     }
 
     private fun parseHostReply(type: Class<*>, bytes: ByteArray): Any? = runCatching {
