@@ -1622,8 +1622,9 @@ class SettingsContentFactory(
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val host = ModuleSettings.normalizeBangumiServerHost(hostInput.text?.toString())
-                if (host == null) {
+                val rawHost = hostInput.text?.toString().orEmpty().trim()
+                val host = ModuleSettings.normalizeBangumiServerHost(rawHost)
+                if (rawHost.isNotEmpty() && host == null) {
                     hostInput.error = context.getString(R.string.bangumi_server_invalid)
                     return@setOnClickListener
                 }
@@ -1632,16 +1633,27 @@ class SettingsContentFactory(
                     credentialInput.error = context.getString(R.string.bangumi_server_credential_invalid)
                     return@setOnClickListener
                 }
-                prefs.edit()
-                    .putString(region.serverKey, host)
-                    .putBoolean(region.httpsKey, httpsCheckBox.isChecked)
-                    .putString(region.credentialKey, rawCredential.ifEmpty { null })
-                    .apply()
+                prefs.edit().apply {
+                    if (host == null) {
+                        remove(region.serverKey)
+                        remove(region.credentialKey)
+                        remove(region.httpsKey)
+                    } else {
+                        putString(region.serverKey, host)
+                        putBoolean(region.httpsKey, httpsCheckBox.isChecked)
+                        putString(region.credentialKey, rawCredential.ifEmpty { null })
+                    }
+                }.apply()
                 refresh()
                 dialog.dismiss()
             }
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                val host = ModuleSettings.normalizeBangumiServerHost(hostInput.text?.toString())
+                val rawHost = hostInput.text?.toString().orEmpty().trim()
+                val host = ModuleSettings.normalizeBangumiServerHost(rawHost)
+                if (rawHost.isEmpty()) {
+                    hostInput.error = context.getString(R.string.bangumi_server_test_empty)
+                    return@setOnClickListener
+                }
                 if (host == null) {
                     hostInput.error = context.getString(R.string.bangumi_server_invalid)
                     return@setOnClickListener

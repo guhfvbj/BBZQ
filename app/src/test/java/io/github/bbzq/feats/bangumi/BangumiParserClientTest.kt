@@ -12,6 +12,7 @@ class BangumiParserClientTest {
         assertEquals("parser.example:8443", ModuleSettings.normalizeBangumiServerHost("https://Parser.Example:8443/"))
         assertEquals("parser.example", ModuleSettings.normalizeBangumiServerHost("parser.example"))
         assertEquals("parser.example", ModuleSettings.normalizeBangumiServerHost("http://parser.example"))
+        assertNull(ModuleSettings.normalizeBangumiServerHost("   "))
         assertNull(ModuleSettings.normalizeBangumiServerHost("https://parser.example/pgc/player/api/playurl"))
     }
 

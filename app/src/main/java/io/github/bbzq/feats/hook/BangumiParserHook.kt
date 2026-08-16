@@ -37,7 +37,7 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
             ?.filter { it.name == "url" && it.parameterCount == 1 && it.parameterTypes[0].name == "okhttp3.HttpUrl" }
             ?.forEach { method ->
                 env.hookBefore(method) { param ->
-                    runCatching { routeRequest(param.args) }.onFailure { log("BangumiParser URL route failed", it) }
+                    runCatching { routeRequest(param.thisObject, param.args) }.onFailure { log("BangumiParser URL route failed", it) }
                 }
                 installed++
             }
@@ -53,7 +53,7 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         log("startHook: BangumiParser routes=$installed")
     }
 
-    private fun routeRequest(args: MutableList<Any?>) {
+    private fun routeRequest(builder: Any?, args: MutableList<Any?>) {
         val original = args.firstOrNull()?.toString() ?: return
         val uri = runCatching { URI(original) }.getOrNull() ?: return
         val path = uri.path ?: return
@@ -62,7 +62,8 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
             path.endsWith("/pgc/player/api/playurl") -> selectPlayRoute(query)
             path.contains("/bilibili.pgc.gateway.player.v1.PlayURL/") ||
                 path.contains("/bilibili.pgc.gateway.player.v2.PlayURL/") -> selectGrpcPlayRoute(query)
-            path.endsWith("/pgc/view/v2/app/season") || path.endsWith("/intl/gateway/v2/ogv/view/app/season") -> selectSeasonRoute(query)
+            path.endsWith("/pgc/view/v2/app/season") -> selectSeasonRoute(query, isInternational = false)
+            path.endsWith("/intl/gateway/v2/ogv/view/app/season") -> selectSeasonRoute(query, isInternational = true)
             path.endsWith("/intl/gateway/v2/app/subtitle") -> selectSubtitleRoute(query)
             path.endsWith("/x/v2/search/type") && query["type"] in areaSearchTypes -> selectSearchRoute(query)
             else -> null
@@ -79,6 +80,7 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
             type.getMethod("get", String::class.java).invoke(null, url)
         }.getOrNull() ?: return
         args[0] = httpUrl
+        setParserHeader(builder, route.credential?.platform ?: route.region.defaultPlatform)
         if (route.kind == RouteKind.SEARCH) pendingSearchRegion.set(route.region)
         if (route.kind == RouteKind.SEASON) activateRegion(route.region)
         query["ep_id"]?.takeIf(String::isNotBlank)?.let { episodeRegions[it] = route.region }
@@ -86,14 +88,18 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     private fun selectPlayRoute(query: Map<String, String>): Route? {
-        val episode = query["ep_id"]
-        val preferred = episode?.let(episodeRegions::get)
-        return preferred?.let(::routeFor)
+        val region = query["ep_id"]?.let(episodeRegions::get)
+            ?: currentActiveRegion()
+            ?: defaultMainRegion()
+        return region?.let(::routeFor)
             ?.copy(kind = RouteKind.PLAY)
     }
 
     private fun selectGrpcPlayRoute(query: Map<String, String>): Route? {
-        val region = query["ep_id"]?.let(episodeRegions::get) ?: currentActiveRegion() ?: return null
+        val region = query["ep_id"]?.let(episodeRegions::get)
+            ?: currentActiveRegion()
+            ?: defaultMainRegion()
+            ?: return null
         return routeFor(region)?.copy(kind = RouteKind.GRPC_PLAY)
     }
 
@@ -103,21 +109,31 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         else -> null
     }?.copy(kind = RouteKind.SEARCH)
 
-    private fun selectSeasonRoute(query: Map<String, String>): Route? {
+    private fun selectSeasonRoute(query: Map<String, String>, isInternational: Boolean): Route? {
         val region = query["ep_id"]?.let(episodeRegions::get)
             ?: query["season_id"]?.let(seasonRegions::get)
-            ?: return null
-        return routeFor(region)?.copy(kind = RouteKind.SEASON)
+            ?: if (isInternational) BangumiRegion.TH.takeIf { routeFor(it) != null } else defaultMainRegion()
+        return region?.let(::routeFor)?.copy(kind = RouteKind.SEASON)
     }
 
     private fun selectSubtitleRoute(query: Map<String, String>): Route? =
-        query["ep_id"]?.let(episodeRegions::get)
+        (query["ep_id"]?.let(episodeRegions::get)
+            ?: currentActiveRegion()
+            ?: BangumiRegion.TH.takeIf { routeFor(it) != null })
             ?.takeIf { it == BangumiRegion.TH }
             ?.let(::routeFor)
             ?.copy(kind = RouteKind.SUBTITLE)
 
     private fun orderedRegions(preferred: BangumiRegion?): List<BangumiRegion> =
         (listOfNotNull(preferred) + listOf(BangumiRegion.HK, BangumiRegion.TW, BangumiRegion.TH, BangumiRegion.CN)).distinct()
+
+    /**
+     * A normal detail-page request has no region marker. Pick the first
+     * configured main-site parser so that its season response establishes the
+     * context used by player and gRPC requests that follow.
+     */
+    private fun defaultMainRegion(): BangumiRegion? =
+        listOf(BangumiRegion.HK, BangumiRegion.TW, BangumiRegion.CN).firstOrNull { routeFor(it) != null }
 
     private fun routeFor(region: BangumiRegion): Route? {
         val host = ModuleSettings.getBangumiServerHost(prefs, region) ?: return null
@@ -132,6 +148,14 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     private fun activateRegion(region: BangumiRegion) {
         activeRegion.set(ActiveRegion(region, System.currentTimeMillis() + ACTIVE_REGION_TTL_MS))
+    }
+
+    private fun setParserHeader(builder: Any?, platform: String) {
+        runCatching {
+            builder?.javaClass?.methods?.firstOrNull { method ->
+                method.name == "header" && method.parameterTypes.contentEquals(arrayOf(String::class.java, String::class.java))
+            }?.invoke(builder, "platform-from-bbzq", platform)
+        }.onFailure { log("BangumiParser header route failed", it) }
     }
 
     private fun currentActiveRegion(): BangumiRegion? {
