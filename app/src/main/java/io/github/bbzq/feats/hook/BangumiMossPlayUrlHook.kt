@@ -26,11 +26,13 @@ import io.github.bbzq.proto.VideoInfo
 import org.json.JSONArray
 import org.json.JSONObject
 import android.os.Looper
+import android.os.Handler
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
-import java.util.concurrent.FutureTask
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook(env) {
     override fun startHook() {
@@ -88,31 +90,58 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         val primary = callback.javaClass.interfaces.firstOrNull { type ->
             type.methods.any { it.name == "onNext" && it.parameterCount == 1 }
         } ?: return null
+        val pendingFallback = AtomicBoolean(false)
+        val callbackCompleted = AtomicBoolean(false)
+        fun deliver(method: Method, args: Array<Any?>?) {
+            runCatching {
+                if (args == null) method.invoke(callback) else method.invoke(callback, *args)
+            }.onFailure { error ->
+                if (error is InvocationTargetException) throw error.targetException
+                throw error
+            }
+        }
         return Proxy.newProxyInstance(
             callback.javaClass.classLoader ?: classLoader,
             (callback.javaClass.interfaces.toSet() + primary).toTypedArray(),
         ) { _, method, args ->
             if (method.name == "onNext" && args?.isNotEmpty() == true) {
-                replaceIfBlocked(request, args[0], "callback:$methodName")?.let { replacement ->
-                    @Suppress("UNCHECKED_CAST")
-                    (args as Array<Any?>)[0] = replacement
+                val response = args[0]
+                if (response != null && isRegionBlocked(response)) {
+                    val source = "callback:$methodName"
+                    log("Bangumi MOSS [$source] blocked=true; parser fallback scheduled")
+                    pendingFallback.set(true)
+                    PARSER_EXECUTOR.execute {
+                        val replacement = replaceIfBlocked(request, response, source, alreadyBlocked = true)
+                        MAIN_HANDLER.post {
+                            @Suppress("UNCHECKED_CAST")
+                            (args as Array<Any?>)[0] = replacement ?: response
+                            deliver(method, args)
+                            if (callbackCompleted.get()) deliverCompletion(callback, primary)
+                        }
+                    }
+                    return@newProxyInstance null
                 }
             }
-            try {
-                if (args == null) method.invoke(callback) else method.invoke(callback, *args)
-            } catch (error: InvocationTargetException) {
-                throw error.targetException
+            if (method.name in COMPLETION_METHODS && pendingFallback.get()) {
+                callbackCompleted.set(true)
+                return@newProxyInstance null
             }
+            deliver(method, args)
         }
     }
 
-    private fun replaceIfBlocked(request: Any, response: Any?, source: String): Any? {
+    private fun deliverCompletion(callback: Any, primary: Class<*>) {
+        primary.methods.firstOrNull { it.name in COMPLETION_METHODS && it.parameterCount == 0 }
+            ?.let { method -> runCatching { method.invoke(callback) } }
+    }
+
+    private fun replaceIfBlocked(request: Any, response: Any?, source: String, alreadyBlocked: Boolean = false): Any? {
         val requestKind = request.javaClass.name.substringAfterLast('.')
         if (response == null) {
             log("Bangumi MOSS [$source] no response; request=$requestKind")
             return null
         }
-        val blocked = isRegionBlocked(response)
+        val blocked = alreadyBlocked || isRegionBlocked(response)
         log("Bangumi MOSS [$source] response=${response.javaClass.name.substringAfterLast('.')} request=$requestKind blocked=$blocked")
         if (!blocked) return null
         val requestBytes = request.callMethod("toByteArray") as? ByteArray
@@ -209,9 +238,7 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
     private fun requestParserPayload(
         epId: Long, seasonId: Long, cid: Long, qn: Long, fnver: Int, fnval: Int,
         forceHost: Int, fourk: Boolean,
-    ): JSONObject? = runOffMainThread {
-        requestParserPayloadInternal(epId, seasonId, cid, qn, fnver, fnval, forceHost, fourk)
-    }
+    ): JSONObject? = requestParserPayloadInternal(epId, seasonId, cid, qn, fnver, fnval, forceHost, fourk)
 
     private fun requestParserPayloadInternal(
         epId: Long, seasonId: Long, cid: Long, qn: Long, fnver: Int, fnval: Int,
@@ -292,15 +319,6 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
             }
             is JSONArray -> for (index in 0 until node.length()) collectEpisodes(node.opt(index), result)
         }
-    }
-
-    private fun <T> runOffMainThread(action: () -> T): T? {
-        if (Looper.myLooper() != Looper.getMainLooper()) return runCatching(action)
-            .onFailure { log("Bangumi MOSS worker request failed", it) }.getOrNull()
-        val task = FutureTask(action)
-        Thread(task, "BBZQ-BangumiParser").start()
-        return runCatching { task.get() }
-            .onFailure { log("Bangumi MOSS worker request failed", it) }.getOrNull()
     }
 
     private fun normalizePayload(raw: String): JSONObject? = runCatching {
@@ -423,6 +441,11 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
     private data class Episode(val id: Long, val cid: Long)
 
     private companion object {
+        val PARSER_EXECUTOR = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "BBZQ-BangumiParser").apply { isDaemon = true }
+        }
+        val MAIN_HANDLER = Handler(Looper.getMainLooper())
+        val COMPLETION_METHODS = setOf("onCompleted", "onComplete")
         val MOSS_CLASSES = arrayOf(
             "com.bapis.bilibili.pgc.gateway.player.v1.PlayURLMoss",
             "com.bapis.bilibili.pgc.gateway.player.v2.PlayURLMoss",

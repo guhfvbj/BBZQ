@@ -91,6 +91,8 @@ internal object BangumiParserClient {
             "/intl/gateway/v2/ogv/view/app/season"
         } else {
             params["area"] = region.name.lowercase()
+            params.putIfAbsent("mobi_app", "android")
+            params.putIfAbsent("platform", "android")
             params.putIfAbsent("build", "6400000")
             "/pgc/view/v2/app/season"
         }
