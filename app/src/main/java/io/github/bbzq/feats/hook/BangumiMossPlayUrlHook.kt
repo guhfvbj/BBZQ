@@ -25,10 +25,12 @@ import io.github.bbzq.proto.StreamInfo
 import io.github.bbzq.proto.VideoInfo
 import org.json.JSONArray
 import org.json.JSONObject
+import android.os.Looper
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
+import java.util.concurrent.FutureTask
 
 class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook(env) {
     override fun startHook() {
@@ -207,30 +209,98 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
     private fun requestParserPayload(
         epId: Long, seasonId: Long, cid: Long, qn: Long, fnver: Int, fnval: Int,
         forceHost: Int, fourk: Boolean,
+    ): JSONObject? = runOffMainThread {
+        requestParserPayloadInternal(epId, seasonId, cid, qn, fnver, fnval, forceHost, fourk)
+    }
+
+    private fun requestParserPayloadInternal(
+        epId: Long, seasonId: Long, cid: Long, qn: Long, fnver: Int, fnval: Int,
+        forceHost: Int, fourk: Boolean,
     ): JSONObject? {
-        val query = linkedMapOf(
-            "ep_id" to epId.toString(), "cid" to cid.toString(), "qn" to qn.toString(),
-            "fnver" to fnver.toString(), "fnval" to fnval.toString(),
-            "force_host" to forceHost.toString(), "fourk" to if (fourk) "1" else "0",
-        )
+        val requestedEpisode = Episode(epId, cid)
         BangumiRegionContext.candidates(epId, seasonId).forEach { region ->
             val host = ModuleSettings.getBangumiServerHost(prefs, region) ?: return@forEach
-            log("Bangumi MOSS parser request: region=${region.name}, ep=$epId, season=$seasonId, cid=$cid")
+            val episode = resolveEpisode(region, host, seasonId, requestedEpisode) ?: requestedEpisode
+            val query = linkedMapOf(
+                "ep_id" to episode.id.toString(), "cid" to episode.cid.toString(), "qn" to qn.toString(),
+                "fnver" to fnver.toString(), "fnval" to fnval.toString(),
+                "force_host" to forceHost.toString(), "fourk" to if (fourk) "1" else "0",
+            )
+            if (episode.id == 0L || episode.cid == 0L) {
+                log("Bangumi MOSS fallback skipped: region=${region.name}, missing ep/cid after season lookup")
+                return@forEach
+            }
+            log("Bangumi MOSS parser request: region=${region.name}, ep=${episode.id}, season=$seasonId, cid=${episode.cid}")
             val result = BangumiParserClient.requestPlayUrl(
                 region, host, query, ModuleSettings.getBangumiServerCredential(prefs, region),
                 classLoader, ModuleSettings.isBangumiServerHttps(prefs, region),
             )
             val payload = result.body?.let(::normalizePayload)
             if (payload != null && payload.hasPlayableStream()) {
-                BangumiRegionContext.recordEpisode(epId.toString(), region)
+                BangumiRegionContext.recordEpisode(episode.id.toString(), region)
                 BangumiRegionContext.recordSeason(seasonId.toString(), region)
                 BangumiRegionContext.activate(region)
                 log("Bangumi MOSS fallback succeeded: region=" + region.name + ", ep=" + epId)
                 return payload
             }
-            log("Bangumi MOSS fallback rejected: region=${region.name}, ep=$epId, transport=${result.error ?: "ok"}")
+            log("Bangumi MOSS fallback rejected: region=${region.name}, ep=${episode.id}, transport=${result.error ?: "ok"}")
         }
         return null
+    }
+
+    private fun resolveEpisode(
+        region: io.github.bbzq.BangumiRegion,
+        host: String,
+        seasonId: Long,
+        requested: Episode,
+    ): Episode? {
+        if (requested.id != 0L && requested.cid != 0L) return requested
+        if (seasonId == 0L) return null
+        log("Bangumi MOSS season lookup: region=${region.name}, season=$seasonId, requestedEp=${requested.id}")
+        val result = BangumiParserClient.requestSeason(
+            region, host,
+            mapOf("season_id" to seasonId.toString(), "ep_id" to requested.id.toString()),
+            ModuleSettings.getBangumiServerCredential(prefs, region), classLoader,
+            ModuleSettings.isBangumiServerHttps(prefs, region),
+        )
+        val root = result.body?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: run {
+                log("Bangumi MOSS season lookup rejected: region=${region.name}, transport=${result.error ?: "ok"}")
+                return null
+            }
+        val season = root.optJSONObject("result") ?: root.optJSONObject("data") ?: root
+        val episodes = ArrayList<JSONObject>()
+        collectEpisodes(season, episodes)
+        val episode = episodes.firstOrNull { requested.id != 0L && it.optLong("id") == requested.id }
+            ?: season.optJSONObject("new_ep")
+            ?: episodes.firstOrNull()
+            ?: return null
+        return Episode(episode.optLong("id"), episode.optLong("cid")).takeIf { it.id != 0L && it.cid != 0L }
+    }
+
+    private fun collectEpisodes(node: Any?, result: MutableList<JSONObject>) {
+        when (node) {
+            is JSONObject -> {
+                if (node.has("id") && node.has("cid")) result += node
+                node.optJSONArray("episodes")?.let { array ->
+                    for (index in 0 until array.length()) collectEpisodes(array.opt(index), result)
+                }
+                node.optJSONArray("modules")?.let { array ->
+                    for (index in 0 until array.length()) collectEpisodes(array.opt(index), result)
+                }
+                node.optJSONObject("data")?.let { collectEpisodes(it, result) }
+            }
+            is JSONArray -> for (index in 0 until node.length()) collectEpisodes(node.opt(index), result)
+        }
+    }
+
+    private fun <T> runOffMainThread(action: () -> T): T? {
+        if (Looper.myLooper() != Looper.getMainLooper()) return runCatching(action)
+            .onFailure { log("Bangumi MOSS worker request failed", it) }.getOrNull()
+        val task = FutureTask(action)
+        Thread(task, "BBZQ-BangumiParser").start()
+        return runCatching { task.get() }
+            .onFailure { log("Bangumi MOSS worker request failed", it) }.getOrNull()
     }
 
     private fun normalizePayload(raw: String): JSONObject? = runCatching {
@@ -349,6 +419,8 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
             it.name == "parseFrom" && it.parameterTypes.contentEquals(arrayOf(ByteArray::class.java))
         }?.invoke(null, bytes)
     }.onFailure { log("Bangumi MOSS host reply reconstruction failed", it) }.getOrNull()
+
+    private data class Episode(val id: Long, val cid: Long)
 
     private companion object {
         val MOSS_CLASSES = arrayOf(

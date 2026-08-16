@@ -74,6 +74,29 @@ internal object BangumiParserClient {
         return request(host, path, sign(params, classLoader), credential?.platform ?: region.defaultPlatform, useHttps)
     }
 
+    fun requestSeason(
+        region: BangumiRegion,
+        host: String,
+        query: Map<String, String>,
+        credential: BangumiServerCredential?,
+        classLoader: ClassLoader,
+        useHttps: Boolean = true,
+    ): Result {
+        val params = LinkedHashMap(query)
+        credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
+        val path = if (region == BangumiRegion.TH) {
+            params.putIfAbsent("mobi_app", "bstar_a")
+            params.putIfAbsent("build", "1001310")
+            params.putIfAbsent("s_locale", "zh_SG")
+            "/intl/gateway/v2/ogv/view/app/season"
+        } else {
+            params["area"] = region.name.lowercase()
+            params.putIfAbsent("build", "6400000")
+            "/pgc/view/v2/app/season"
+        }
+        return request(host, path, sign(params, classLoader), credential?.platform ?: region.defaultPlatform, useHttps)
+    }
+
     fun buildPlayUrl(
         region: BangumiRegion,
         host: String,
