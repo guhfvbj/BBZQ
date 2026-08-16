@@ -2,6 +2,8 @@ package io.github.bbzq.feats.hook
 
 import com.google.protobuf.ByteString
 import com.google.protobuf.Any as ProtoAny
+import io.github.bbzq.AccessKeyRepository
+import io.github.bbzq.BangumiServerCredential
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.BaseRoamingHook
 import io.github.bbzq.feats.allMethods
@@ -292,8 +294,9 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
                     "force_host" to forceHost.toString(), "fourk" to if (fourk) "1" else "0",
                 )
                 log("Bangumi MOSS parser request: region=${region.name}, ep=${episode.id}, season=$seasonId, cid=${episode.cid}")
+                val credential = parserCredential(region)
                 val result = BangumiParserClient.requestPlayUrl(
-                    region, host, query, ModuleSettings.getBangumiServerCredential(prefs, region),
+                    region, host, query, credential,
                     classLoader, ModuleSettings.isBangumiServerHttps(prefs, region),
                 )
                 ParserAttempt(region, episode, result.body?.let(::normalizePayload), result.error)
@@ -330,7 +333,7 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         val result = BangumiParserClient.requestSeason(
             region, host,
             mapOf("season_id" to seasonId.toString(), "ep_id" to requested.id.toString()),
-            ModuleSettings.getBangumiServerCredential(prefs, region), classLoader,
+            parserCredential(region), classLoader,
             ModuleSettings.isBangumiServerHttps(prefs, region),
         )
         val root = result.body?.let { runCatching { JSONObject(it) }.getOrNull() }
@@ -347,6 +350,17 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
             ?: return null
         return Episode(episode.optLong("id"), episode.optLong("cid")).takeIf { it.id != 0L && it.cid != 0L }
     }
+
+    /**
+     * BiliRoaming forwards the signed-in account's access key for parser
+     * requests. Without it the upstream returns the anonymous 480P ladder.
+     * A user-supplied server credential remains an explicit override.
+     */
+    private fun parserCredential(region: io.github.bbzq.BangumiRegion): BangumiServerCredential? =
+        ModuleSettings.getBangumiServerCredential(prefs, region)
+            ?: AccessKeyRepository.read(prefs)?.let { accessKey ->
+                BangumiServerCredential(accessKey, region.defaultPlatform)
+            }
 
     private fun collectEpisodes(node: Any?, result: MutableList<JSONObject>) {
         when (node) {
