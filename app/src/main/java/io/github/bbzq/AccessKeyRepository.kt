@@ -23,10 +23,11 @@ object AccessKeyRepository {
     }
 
     /** Cache a credential observed on an already-authenticated host request. */
-    fun capture(prefs: SharedPreferences, value: String?) {
-        value?.takeIf(::looksLikeAccessKey)?.let { accessKey ->
-            prefs.edit().putString(ModuleSettings.KEY_LAST_ACCESS_KEY, accessKey).apply()
-        }
+    fun capture(prefs: SharedPreferences, value: String?): Boolean {
+        val accessKey = value?.takeIf(::looksLikeAccessKey) ?: return false
+        if (prefs.getString(ModuleSettings.KEY_LAST_ACCESS_KEY, null) == accessKey) return false
+        prefs.edit().putString(ModuleSettings.KEY_LAST_ACCESS_KEY, accessKey).apply()
+        return true
     }
 
     fun looksLikeAccessKey(value: String): Boolean =

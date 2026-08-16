@@ -31,7 +31,7 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         val responseBody = classLoader.findClassOrNull("okhttp3.ResponseBody")
         var installed = 0
         requestBuilder?.allMethods()
-            ?.filter { it.name == "url" && it.parameterCount == 1 && it.parameterTypes[0].name == "okhttp3.HttpUrl" }
+            ?.filter { it.name == "url" && it.parameterCount == 1 }
             ?.forEach { method ->
                 env.hookBefore(method) { param ->
                     runCatching { routeRequest(param.thisObject, param.args) }.onFailure { log("BangumiParser URL route failed", it) }
@@ -59,7 +59,9 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         // accessor, but their normal authenticated REST traffic still carries
         // the same short-lived key. Capture it before any route decision so a
         // later MOSS playback fallback can retain the viewer's VIP identity.
-        AccessKeyRepository.capture(prefs, query["access_key"])
+        if (AccessKeyRepository.capture(prefs, query["access_key"])) {
+            log("Bangumi auth: host access key captured from request URL")
+        }
         val route = when {
             path.endsWith("/pgc/player/api/playurl") -> selectPlayRoute(query)
             path.endsWith("/pgc/view/v2/app/season") -> selectSeasonRoute(query, isInternational = false)
