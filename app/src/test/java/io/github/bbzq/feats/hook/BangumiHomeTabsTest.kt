@@ -6,7 +6,7 @@ import org.junit.Test
 
 class BangumiHomeTabsTest {
     @Test
-    fun `adds mainland and hk tw tabs after existing items`() {
+    fun `adds hk tw and southeast asia tabs after existing items`() {
         val original = listOf(TestTab("bilibili://pegasus/promo"))
 
         val result = BangumiHomeTabs.appendMissing(original, TestTab::uri) { spec ->
@@ -17,19 +17,19 @@ class BangumiHomeTabsTest {
         assertEquals(
             listOf(
                 "bilibili://pegasus/promo",
-                "bilibili://pgc/home",
                 "bilibili://following/home_activity_tab/6544",
+                "https://www.bilibili.tv/zh-Hans",
             ),
             result.map { it?.uri },
         )
-        assertEquals(listOf(null, 50, 60), result.map { it?.position })
+        assertEquals(listOf(null, 60, 70), result.map { it?.position })
     }
 
     @Test
-    fun `recognizes mainland alias and does not duplicate existing tabs`() {
+    fun `recognizes existing tabs and does not duplicate them`() {
         val original = listOf(
-            TestTab("bilibili://pgc/bangumi_v2"),
             TestTab("bilibili://following/home_activity_tab/6544"),
+            TestTab("https://www.bilibili.tv/zh-Hans/"),
         )
 
         val result = BangumiHomeTabs.appendMissing(original, TestTab::uri) { spec ->
