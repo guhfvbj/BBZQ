@@ -3,10 +3,16 @@ package io.github.bbzq.feats.bangumi
 import io.github.bbzq.BangumiRegion
 import io.github.bbzq.BangumiServerCredential
 import io.github.bbzq.ModuleSettings
+import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import java.security.KeyStore
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManagerFactory
+import java.security.cert.CertificateFactory
 
 /** Direct client for servers compatible with BiliRoaming's regional parser protocol. */
 internal object BangumiParserClient {
@@ -312,6 +318,7 @@ internal object BangumiParserClient {
         return runCatching {
             val url = URL(buildUrl(host, path, query, useHttps))
             (url.openConnection() as HttpURLConnection).run {
+                configureDirectIpTls(this, host)
                 requestMethod = "GET"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS
@@ -327,7 +334,63 @@ internal object BangumiParserClient {
         }.getOrElse { Result(null, it.message ?: it.javaClass.simpleName) }
     }
 
+    /**
+     * The regional parser can be reached directly while the Cloudflare origin
+     * is unavailable. This deliberately trusts only the IP-specific origin
+     * certificate, rather than disabling TLS checks for arbitrary servers.
+     */
+    private fun configureDirectIpTls(connection: HttpURLConnection, host: String) {
+        if (connection !is HttpsURLConnection || host.substringBefore(':') != DIRECT_PARSER_IP) return
+        connection.sslSocketFactory = directParserSslContext.socketFactory
+    }
+
     private fun encode(params: Map<String, String>): String = params.entries.joinToString("&") { (key, value) ->
         "${URLEncoder.encode(key, StandardCharsets.UTF_8.name())}=${URLEncoder.encode(value, StandardCharsets.UTF_8.name())}"
+    }
+
+    private val directParserSslContext: SSLContext by lazy {
+        val certificate = CertificateFactory.getInstance("X.509").generateCertificate(
+            ByteArrayInputStream(DIRECT_PARSER_CERTIFICATE.toByteArray(StandardCharsets.US_ASCII)),
+        )
+        val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
+            load(null, null)
+            setCertificateEntry("bbzq-direct-parser", certificate)
+        }
+        val trustManagers = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply {
+            init(keyStore)
+        }
+        SSLContext.getInstance("TLS").apply { init(null, trustManagers.trustManagers, null) }
+    }
+
+    private companion object {
+        const val DIRECT_PARSER_IP = "47.98.174.251"
+
+        const val DIRECT_PARSER_CERTIFICATE = """
+            -----BEGIN CERTIFICATE-----
+            MIIEIjCCAoqgAwIBAgIUIPUMF6a7M4T7yB9FchL6guqdAb8wDQYJKoZIhvcNAQEL
+            BQAwGDEWMBQGA1UEAwwNNDcuOTguMTc0LjI1MTAeFw0yNjA4MTcwNTQ3MzhaFw0y
+            NjA5MTYwNTQ3MzhaMBgxFjAUBgNVBAMMDTQ3Ljk4LjE3NC4yNTEwggGiMA0GCSqG
+            SIb3DQEBAQUAA4IBjwAwggGKAoIBgQCvuvQg0OYlemLQMMRtGvx1Ou973KtIlwSA
+            129UTzfC72HTLMszOJa31qGXrjxaPI1BKJCzDwwnOVhBxzVAG3G4UhT2KyJAHBFs
+            HADhGI+npTqBTN9lohZ4CtqSAjfTT/E5imB7Qv+w3hE+W/x4QCu4GpQ2x3X8oTEu
+            K4r7CKS5GziqK8YrA2uSVOl8fO5ArgJKCILmKVvYRa7gooWNsDGGdqNAZDhXW9Ep
+            VNRKK0MQkSJvmapUQ+5Kxnd5Q13u6OxtAQyGUf0s6NQT9/g0+DyUbqW+yheQ2174
+            w45Opgk0T8/WemZZoNEWX6WlOUGN3J2vqd7EpyKV30NUfnjMswxujyGLI5QN+36M
+            R92UWVaN7VXZGX/IyAgeNPM29mJvMt03UomeJp55PCvMFegdZZVzVmpcJ/hnsOPz
+            kcHsD4Fv2oNuNteS7UgjGoGREpV9om8lPni7FkIxbRXT+CZDhFjFiNL4G+NCGmk4
+            Ok0TFnPT8Cdkq2elwPJjIifMAHUowfcCAwEAAaNkMGIwHQYDVR0OBBYEFBIr/A2b
+            Af5QdQeD3IsqQKgGsCkuMB8GA1UdIwQYMBaAFBIr/A2bAf5QdQeD3IsqQKgGsCku
+            MA8GA1UdEwEB/wQFMAMBAf8wDwYDVR0RBAgwBocEL2Ku+zANBgkqhkiG9w0BAQsF
+            AAOCAYEAjWVx8q80uJvmp0aWh1ogRPbIa2uEGvmJ+LczWb8E8QfeSXyHy2SVr/BB
+            YX9mKmW30TqpNpYiCV1a4d+pDXVwbVExxeil1RLw/ssTpRxZUustlOA7grmDxMwP
+            PT0tYOi7tgb9bRICQHjVcTPUfi2oMyNPJcy8H1ar534uttcFldN4gBublh0FwMLl
+            Jt7bbhULTugwSP7ONAqPemT053QI63CQMhUoz6YGJ7NjVsR6huf4awBDMMvwSyh3
+            TZxGe/yXcGbDu9N8QsXhJBMeC2S8HtaaFiC4z0IU219WBTsX/3XZcNG5kqRhboV5
+            EYB4YXsSK92O79nCWJZctR5t3vFKM9Y15q4X3ANpZWmB1Stf6RWnu3Jlc/rM8qL5
+            +knlGnZjHhCUZKHxhEhrmNw9HEIBJp2UjjB3VwxJMlhkc0qpg00lo+yQ2PvZqLLX
+            m3u1ivkwzlLwecIV1N+7RlJxeHeNJZYLEHjdJ6eOrI7PzdOfaW3hRAQnjKOjm8ow
+            bvaHxUCW
+            -----END CERTIFICATE-----
+        """.trimIndent()
     }
 }
