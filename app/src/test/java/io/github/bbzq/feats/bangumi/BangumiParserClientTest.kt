@@ -54,6 +54,13 @@ class BangumiParserClientTest {
     }
 
     @Test
+    fun `migrates legacy direct IP https ports`() {
+        assertEquals("47.98.174.251:3443", BangumiParserClient.directHttpsEndpoint("47.98.174.251:3103", true))
+        assertEquals("47.98.174.251:3103", BangumiParserClient.directHttpsEndpoint("47.98.174.251:3103", false))
+        assertEquals("parser.example:3103", BangumiParserClient.directHttpsEndpoint("parser.example:3103", true))
+    }
+
+    @Test
     fun `international play url omits area but preserves quality parameters`() {
         val url = BangumiParserClient.buildPlayUrl(
             BangumiRegion.INTL,

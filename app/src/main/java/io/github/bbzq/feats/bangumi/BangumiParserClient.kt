@@ -321,7 +321,27 @@ internal object BangumiParserClient {
 
     internal fun buildUrl(host: String, path: String, query: String, useHttps: Boolean): String {
         val scheme = if (useHttps) "https" else "http"
-        return "$scheme://$host$path${query.takeIf(String::isNotBlank)?.let { "?$it" }.orEmpty()}"
+        val endpoint = directHttpsEndpoint(host, useHttps)
+        return "$scheme://$endpoint$path${query.takeIf(String::isNotBlank)?.let { "?$it" }.orEmpty()}"
+    }
+
+    /**
+     * The server keeps 3101-3103 as plain HTTP for Cloudflare Tunnel origins
+     * and exposes the same services over TLS on 3441-3443. Preserve existing
+     * IP-based HTTPS settings by migrating only those exact legacy endpoints.
+     */
+    internal fun directHttpsEndpoint(host: String, useHttps: Boolean): String {
+        if (!useHttps || host.substringBefore(':') != DIRECT_PARSER_IP) return host
+        val separator = host.lastIndexOf(':')
+        if (separator <= 0 || host.indexOf(':') != separator) return host
+        val port = host.substring(separator + 1).toIntOrNull() ?: return host
+        val migratedPort = when (port) {
+            3101 -> 3441
+            3102 -> 3442
+            3103 -> 3443
+            else -> return host
+        }
+        return "$DIRECT_PARSER_IP:$migratedPort"
     }
 
     private fun request(
