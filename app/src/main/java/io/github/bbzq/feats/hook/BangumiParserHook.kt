@@ -72,11 +72,14 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
             path.endsWith("/x/v2/search/type") && query["type"] in areaSearchTypes -> selectSearchRoute(query)
             else -> null
         } ?: return
+        val routedQuery = if (route.kind == RouteKind.PLAY) {
+            BangumiRegionContext.resolvePlayQuery(query, route.region)
+        } else query
         val url = when (route.kind) {
-            RouteKind.PLAY -> BangumiParserClient.buildPlayUrl(route.region, route.host, query, route.credential, classLoader, route.useHttps)
-            RouteKind.SEARCH -> BangumiParserClient.buildSearchUrl(route.region, route.host, query, route.credential, classLoader, route.useHttps)
-            RouteKind.SEASON -> BangumiParserClient.buildSeasonUrl(route.region, route.host, query, route.credential, classLoader, route.useHttps)
-            RouteKind.SUBTITLE -> BangumiParserClient.buildSubtitleUrl(route.host, query, route.credential, classLoader, route.useHttps)
+            RouteKind.PLAY -> BangumiParserClient.buildPlayUrl(route.region, route.host, routedQuery, route.credential, classLoader, route.useHttps)
+            RouteKind.SEARCH -> BangumiParserClient.buildSearchUrl(route.region, route.host, routedQuery, route.credential, classLoader, route.useHttps)
+            RouteKind.SEASON -> BangumiParserClient.buildSeasonUrl(route.region, route.host, routedQuery, route.credential, classLoader, route.useHttps)
+            RouteKind.SUBTITLE -> BangumiParserClient.buildSubtitleUrl(route.host, routedQuery, route.credential, classLoader, route.useHttps)
         }
         val httpUrl = runCatching {
             val type = classLoader.findClassOrNull("okhttp3.HttpUrl") ?: return@runCatching null
@@ -87,8 +90,8 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         log("BangumiParser routed ${route.kind.name.lowercase()}: region=${route.region.name}, path=$path, type=${query["type"].orEmpty()}")
         if (route.kind == RouteKind.SEARCH) pendingSearchRegion.set(route.region)
         if (route.kind == RouteKind.SEASON) activateRegion(route.region)
-        BangumiRegionContext.recordEpisode(query["ep_id"], route.region)
-        BangumiRegionContext.recordSeason(query["season_id"], route.region)
+        BangumiRegionContext.recordEpisode(routedQuery["ep_id"], route.region)
+        BangumiRegionContext.recordSeason(routedQuery["season_id"], route.region)
     }
 
     private fun selectPlayRoute(query: Map<String, String>): Route? {
@@ -194,12 +197,42 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     private fun recordSearchRegions(raw: String, region: BangumiRegion) = runCatching {
         val root = JSONObject(raw)
-        fun record(item: JSONObject) {
-            BangumiRegionContext.recordSeason(item.optString("season_id"), region)
+        fun firstNonBlank(item: JSONObject, vararg keys: String): String? =
+            keys.asSequence().map { item.optString(it) }.firstOrNull { it.isNotBlank() }
+
+        fun isMovie(item: JSONObject): Boolean =
+            item.optInt("season_type") == 2 ||
+                item.optInt("media_type") == 2 ||
+                item.optString("season_type_name").contains("影") ||
+                item.optString("type").equals("movie", ignoreCase = true)
+
+        fun record(item: JSONObject, inheritedSeasonId: String? = null, inheritedMovie: Boolean = false) {
+            val seasonId = firstNonBlank(item, "season_id", "seasonId") ?: inheritedSeasonId
+            val movie = inheritedMovie || isMovie(item)
+            BangumiRegionContext.recordSeason(seasonId, region)
             BangumiRegionContext.recordEpisode(item.optString("ep_id"), region)
-            item.optString("param").takeIf { it.matches(Regex("\\d+")) }?.let { BangumiRegionContext.recordSeason(it, region) }
+            val itemEpisode = firstNonBlank(item, "ep_id", "episode_id")
+            val itemCid = firstNonBlank(item, "cid")
+            if (itemEpisode != null && itemCid != null) {
+                BangumiRegionContext.recordEpisodeReference(itemEpisode, itemCid, seasonId, region, movie)
+            }
+            item.optString("param").takeIf { it.matches(Regex("\\d+")) }?.let {
+                if (itemCid != null) {
+                    BangumiRegionContext.recordEpisodeReference(it, itemCid, seasonId, region, movie)
+                } else {
+                    BangumiRegionContext.recordSeason(it, region)
+                }
+            }
             item.optJSONArray("episodes")?.let { episodes ->
-                for (index in 0 until episodes.length()) episodes.optJSONObject(index)?.let(::record)
+                for (index in 0 until episodes.length()) {
+                    val episode = episodes.optJSONObject(index) ?: continue
+                    val episodeId = firstNonBlank(episode, "id", "ep_id", "episode_id", "param")
+                    val cid = firstNonBlank(episode, "cid")
+                    if (episodeId != null && cid != null) {
+                        BangumiRegionContext.recordEpisodeReference(episodeId, cid, seasonId, region, movie)
+                    }
+                    record(episode, seasonId, movie)
+                }
             }
         }
         fun visit(value: Any?) {
