@@ -44,4 +44,21 @@ class BangumiRegionContextTest {
         assertFalse(hk.containsKey("season_id"))
         assertEquals("9999", hk["cid"])
     }
+
+    @Test
+    fun `keeps movie references keyed by the episode id used by the card`() {
+        BangumiRegionContext.recordEpisodeReference(
+            episodeId = "679957",
+            cid = "859778302",
+            seasonId = "0",
+            region = BangumiRegion.INTL,
+            isMovie = true,
+        )
+
+        val resolved = BangumiRegionContext.resolvePlayQuery(
+            mapOf("ep_id" to "679957", "cid" to "1"),
+            BangumiRegion.INTL,
+        )
+        assertEquals("859778302", resolved["cid"])
+    }
 }

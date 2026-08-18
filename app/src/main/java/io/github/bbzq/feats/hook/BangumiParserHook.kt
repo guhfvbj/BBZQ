@@ -17,13 +17,17 @@ import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Routes region-specific JSON endpoints to a compatible parser.
  * The original request is left intact whenever a route cannot be rebuilt.
  */
 class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
-    private val pendingSearchRegion = ThreadLocal<BangumiRegion?>()
+    // OkHttp may route the response callback to a different thread than the
+    // Request.Builder hook. Keep this context process-wide so search cards are
+    // still indexed before the user starts playback.
+    private val pendingSearchRegion = AtomicReference<BangumiRegion?>()
 
     override fun startHook() {
         if (env.processName != env.packageName || !ModuleSettings.isAddBangumiEnabled(prefs)) return
@@ -170,9 +174,8 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         var output = raw
         if (raw.contains("\"video_info\"")) output = BangumiParserClient.convertThailandPlayUrl(raw)
         if (ModuleSettings.isBangumiSubtitleHantToHansEnabled(prefs)) output = convertTraditionalSubtitles(output)
-        pendingSearchRegion.get()?.let { region ->
-            recordSearchRegions(output, region)
-            pendingSearchRegion.remove()
+        pendingSearchRegion.get()?.takeIf { output.contains("\"items\"") }?.let { region ->
+            if (pendingSearchRegion.compareAndSet(region, null)) recordSearchRegions(output, region)
         }
         return appendAreaSearchNavigation(output)
     }
@@ -210,8 +213,8 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
             val seasonId = firstNonBlank(item, "season_id", "seasonId") ?: inheritedSeasonId
             val movie = inheritedMovie || isMovie(item)
             BangumiRegionContext.recordSeason(seasonId, region)
-            BangumiRegionContext.recordEpisode(item.optString("ep_id"), region)
-            val itemEpisode = firstNonBlank(item, "ep_id", "episode_id")
+            BangumiRegionContext.recordEpisode(firstNonBlank(item, "ep_id", "episode_id", "id"), region)
+            val itemEpisode = firstNonBlank(item, "ep_id", "episode_id", "id", "object_id")
             val itemCid = firstNonBlank(item, "cid")
             if (itemEpisode != null && itemCid != null) {
                 BangumiRegionContext.recordEpisodeReference(itemEpisode, itemCid, seasonId, region, movie)
