@@ -222,6 +222,54 @@ internal object BangumiParserClient {
     fun buildGrpcProxyUrl(host: String, original: URI, useHttps: Boolean): String =
         buildUrl(host, original.rawPath.orEmpty(), original.rawQuery.orEmpty(), useHttps)
 
+    /** Sends an installed-host protobuf request through the regional parser. */
+    fun requestGrpc(
+        host: String,
+        service: String,
+        method: String,
+        body: ByteArray,
+        credential: BangumiServerCredential?,
+        useHttps: Boolean,
+    ): ByteArray? = runCatching {
+        val url = URL(buildUrl(host, "/$service/$method", "", useHttps))
+        (url.openConnection() as HttpURLConnection).run {
+            configureDirectIpTls(this, host)
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = TIMEOUT_MS
+            readTimeout = TIMEOUT_MS
+            setRequestProperty("Content-Type", "application/grpc+proto")
+            setRequestProperty("Accept", "application/grpc+proto, application/octet-stream")
+            setRequestProperty("Accept-Encoding", "gzip,deflate")
+            setRequestProperty("Build", BuildConfig.VERSION_CODE.toString())
+            setRequestProperty("x-from-bbzq", BuildConfig.RELEASE_NAME)
+            setRequestProperty("platform-from-bbzq", credential?.platform.orEmpty())
+            outputStream.use { it.write(body) }
+            val code = responseCode
+            val stream = if (code in 200..299) inputStream else errorStream
+            val bytes = stream?.use { input ->
+                when (getHeaderField("Content-Encoding")?.lowercase().orEmpty()) {
+                    "gzip" -> GZIPInputStream(input).use { it.readBytes() }
+                    "deflate" -> InflaterInputStream(input).use { it.readBytes() }
+                    else -> input.readBytes()
+                }
+            }
+            disconnect()
+            if (code !in 200..299 || bytes == null || bytes.isEmpty()) null else unwrapGrpcPayload(bytes)
+        }
+    }.onFailure { /* Interactive features are best-effort and must not affect playback. */ }.getOrNull()
+
+    private fun unwrapGrpcPayload(bytes: ByteArray): ByteArray {
+        if (bytes.size < 5) return bytes
+        val length = ((bytes[1].toInt() and 0xff) shl 24) or
+            ((bytes[2].toInt() and 0xff) shl 16) or
+            ((bytes[3].toInt() and 0xff) shl 8) or
+            (bytes[4].toInt() and 0xff)
+        return if ((bytes[0].toInt() == 0 || bytes[0].toInt() == 1) && length in 0..bytes.size - 5) {
+            bytes.copyOfRange(5, 5 + length)
+        } else bytes
+    }
+
     fun convertThailandPlayUrl(raw: String): String = runCatching {
         val input = org.json.JSONObject(raw)
         val videoInfo = input.optJSONObject("data")?.optJSONObject("video_info") ?: return@runCatching raw

@@ -13,6 +13,7 @@ import io.github.bbzq.feats.hook.BottomBarHook
 import io.github.bbzq.feats.hook.AutoLikeHook
 import io.github.bbzq.feats.hook.BangumiParserHook
 import io.github.bbzq.feats.hook.BangumiMossPlayUrlHook
+import io.github.bbzq.feats.hook.BangumiInteractiveMossHook
 import io.github.bbzq.feats.hook.AccessKeyHook
 import io.github.bbzq.feats.hook.ChronosPromotionHook
 import io.github.bbzq.feats.hook.CustomThemeHook
@@ -149,6 +150,7 @@ object RoamingRuntime {
                 ::HomeRecommendTabHook,
                 ::BangumiParserHook,
                 ::BangumiMossPlayUrlHook,
+                ::BangumiInteractiveMossHook,
                 ::HomeRecommendPreloadHook,
                 ::DynamicPageHook,
                 ::HomeTopBarPurifyHook,
