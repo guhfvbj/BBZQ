@@ -232,6 +232,16 @@
     <string name="about_update_summary">检查新版本与设置测试版更新。</string>
     <string name="about_config_backup_title">配置备份</string>
     <string name="about_config_backup_summary">导入、导出配置与清除缓存数据。</string>
+    <string name="debug_log_enabled_title">启用调试日志</string>
+    <string name="debug_log_enabled_summary">记录首页 Tab 和番剧接口的诊断信息；默认关闭。</string>
+    <string name="debug_log_title">调试日志</string>
+    <string name="debug_log_summary">当前已收集 %1$d 个字符，点击查看、复制或分享。</string>
+    <string name="debug_log_empty">暂无调试日志。开启开关后重启 B 站并重现问题。</string>
+    <string name="debug_log_copy">复制</string>
+    <string name="debug_log_share">分享</string>
+    <string name="debug_log_clear">清空</string>
+    <string name="debug_log_copied">调试日志已复制</string>
+    <string name="debug_log_cleared">调试日志已清空</string>
     <string name="about_project_repository_title">项目仓库</string>
     <string name="about_telegram_channel_title">Telegram 频道</string>
     <string name="about_check_update_title">检查更新</string>

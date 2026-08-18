@@ -67,6 +67,8 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
             path.endsWith("/pgc/view/v2/app/season") -> selectSeasonRoute(query, isInternational = false)
             path.endsWith("/intl/gateway/v2/ogv/view/app/season") -> selectSeasonRoute(query, isInternational = true)
             path.endsWith("/intl/gateway/v2/app/subtitle") -> selectSubtitleRoute(query)
+            path.endsWith("/intl/gateway/v2/app/search/type") ||
+                path.endsWith("/intl/gateway/app/search/type") -> selectInternationalSearchRoute(query)
             path.endsWith("/x/v2/search/type") && query["type"] in areaSearchTypes -> selectSearchRoute(query)
             else -> null
         } ?: return
@@ -82,6 +84,7 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         }.getOrNull() ?: return
         args[0] = httpUrl
         setParserHeader(builder, route.credential?.platform ?: route.region.defaultPlatform)
+        log("BangumiParser routed ${route.kind.name.lowercase()}: region=${route.region.name}, path=$path, type=${query["type"].orEmpty()}")
         if (route.kind == RouteKind.SEARCH) pendingSearchRegion.set(route.region)
         if (route.kind == RouteKind.SEASON) activateRegion(route.region)
         BangumiRegionContext.recordEpisode(query["ep_id"], route.region)
@@ -101,6 +104,9 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
         AREA_INTL_SEARCH_TYPE -> routeFor(BangumiRegion.TH)
         else -> null
     }?.copy(kind = RouteKind.SEARCH)
+
+    private fun selectInternationalSearchRoute(query: Map<String, String>): Route? =
+        routeFor(BangumiRegion.TH)?.copy(kind = RouteKind.SEARCH)
 
     private fun selectSeasonRoute(query: Map<String, String>, isInternational: Boolean): Route? {
         val region = query["ep_id"]?.let(::findEpisodeRegion)

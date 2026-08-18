@@ -5,6 +5,7 @@ import io.github.bbzq.BangumiServerCredential
 import io.github.bbzq.ModuleSettings
 import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URLEncoder
 import java.net.URL
 import java.nio.charset.StandardCharsets
@@ -72,6 +73,7 @@ internal object BangumiParserClient {
         val params = LinkedHashMap(query)
         val path = if (region == BangumiRegion.TH) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
         if (region == BangumiRegion.TH) {
+            params["type"] = internationalSearchType(params["type"])
             params.putAll(mapOf(
                 "appkey" to "7d089525d3611b1c",
                 "build" to "1001310",
@@ -145,8 +147,8 @@ internal object BangumiParserClient {
     ): String {
         val params = LinkedHashMap(query)
         val path = if (region == BangumiRegion.TH) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
-        params["type"] = "7"
         if (region == BangumiRegion.TH) {
+            params["type"] = internationalSearchType(params["type"])
             params.putAll(mapOf("appkey" to "7d089525d3611b1c", "build" to "1001310", "mobi_app" to "bstar_a", "platform" to "android", "s_locale" to "zh_SG", "c_locale" to "zh_SG", "lang" to "hans"))
         } else {
             params["area"] = region.name.lowercase()
@@ -155,6 +157,9 @@ internal object BangumiParserClient {
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
         return buildUrl(host, path, sign(params, classLoader), useHttps)
     }
+
+    internal fun internationalSearchType(type: String?): String =
+        if (type == SYNTHETIC_INTERNATIONAL_MOVIE_TYPE) INTERNATIONAL_MOVIE_TYPE else type ?: INTERNATIONAL_MOVIE_TYPE
 
     fun buildSeasonUrl(
         region: BangumiRegion,
@@ -198,6 +203,10 @@ internal object BangumiParserClient {
         }
         return buildUrl(host, "/intl/gateway/v2/app/subtitle", sign(params, classLoader), useHttps)
     }
+
+    /** Keeps the host client's protobuf request and lets the parser proxy only its transport. */
+    fun buildGrpcProxyUrl(host: String, original: URI, useHttps: Boolean): String =
+        buildUrl(host, original.rawPath.orEmpty(), original.rawQuery.orEmpty(), useHttps)
 
     fun convertThailandPlayUrl(raw: String): String = runCatching {
         val input = org.json.JSONObject(raw)
@@ -363,6 +372,8 @@ internal object BangumiParserClient {
     }
 
     private const val DIRECT_PARSER_IP = "47.98.174.251"
+    private const val SYNTHETIC_INTERNATIONAL_MOVIE_TYPE = "1920"
+    private const val INTERNATIONAL_MOVIE_TYPE = "8"
 
     private val DIRECT_PARSER_CERTIFICATE = """
             -----BEGIN CERTIFICATE-----

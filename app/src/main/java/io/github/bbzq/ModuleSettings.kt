@@ -105,6 +105,7 @@ object ModuleSettings {
     const val KEY_FULL_NUMBER_FORMAT_ENABLED = "full_number_format_enabled"
     const val KEY_UNLOCK_COMMENT_GIF_ENABLED = "unlock_comment_gif_enabled"
     const val KEY_LAST_ACCESS_KEY = "last_access_key"
+    const val KEY_DEBUG_LOG_ENABLED = ModuleDebugLog.KEY_ENABLED
     const val KEY_HOST_ACCOUNT_UID = "host_account_uid"
     const val KEY_HOST_ACCOUNT_NAME = "host_account_name"
     const val KEY_HIDE_DESKTOP_ICON = "hide_desktop_icon"

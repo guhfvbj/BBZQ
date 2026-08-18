@@ -30,6 +30,13 @@ class BangumiParserClientTest {
     }
 
     @Test
+    fun `maps synthetic international tab search to movie type`() {
+        assertEquals("8", BangumiParserClient.internationalSearchType("1920"))
+        assertEquals("8", BangumiParserClient.internationalSearchType(null))
+        assertEquals("7", BangumiParserClient.internationalSearchType("7"))
+    }
+
+    @Test
     fun `builds http parser and grpc proxy urls`() {
         assertEquals(
             "http://parser.example/pgc/player/api/playurl?ep_id=1",

@@ -5,6 +5,7 @@ import android.content.ContextWrapper
 import android.content.SharedPreferences
 import android.content.res.AssetManager
 import android.content.res.Resources
+import io.github.bbzq.ModuleDebugLog
 import io.github.bbzq.ModuleSettingsBridge
 import kotlin.LazyThreadSafetyMode
 import io.github.bbzq.feats.hook.BottomBarHook
@@ -244,6 +245,7 @@ class RoamingEnv(
 
     fun log(message: String, throwable: Throwable? = null) {
         logger(message, throwable)
+        runCatching { ModuleDebugLog.append(prefs, message, throwable) }
     }
 
     companion object
