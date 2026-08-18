@@ -2,6 +2,7 @@ package io.github.bbzq.feats.bangumi
 
 import io.github.bbzq.BangumiRegion
 import io.github.bbzq.BangumiServerCredential
+import io.github.bbzq.BuildConfig
 import io.github.bbzq.ModuleSettings
 import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
@@ -341,8 +342,8 @@ internal object BangumiParserClient {
                 // Match BiliRoaming's parser transport. The server forwards
                 // these non-secret headers to the international upstream.
                 setRequestProperty("Accept-Encoding", "gzip,deflate")
-                setRequestProperty("Build", MAIN_BUILD)
-                setRequestProperty("x-from-bbzq", "bbzq")
+                setRequestProperty("Build", BuildConfig.VERSION_CODE.toString())
+                setRequestProperty("x-from-bbzq", BuildConfig.RELEASE_NAME)
                 setRequestProperty("platform-from-bbzq", platform)
                 extraHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
                 val code = responseCode
