@@ -362,10 +362,9 @@ internal object BangumiParserClient {
         SSLContext.getInstance("TLS").apply { init(null, trustManagers.trustManagers, null) }
     }
 
-    private companion object {
-        const val DIRECT_PARSER_IP = "47.98.174.251"
+    private const val DIRECT_PARSER_IP = "47.98.174.251"
 
-        const val DIRECT_PARSER_CERTIFICATE = """
+    private val DIRECT_PARSER_CERTIFICATE = """
             -----BEGIN CERTIFICATE-----
             MIIEIjCCAoqgAwIBAgIUIPUMF6a7M4T7yB9FchL6guqdAb8wDQYJKoZIhvcNAQEL
             BQAwGDEWMBQGA1UEAwwNNDcuOTguMTc0LjI1MTAeFw0yNjA4MTcwNTQ3MzhaFw0y
@@ -392,5 +391,4 @@ internal object BangumiParserClient {
             bvaHxUCW
             -----END CERTIFICATE-----
         """.trimIndent()
-    }
 }
