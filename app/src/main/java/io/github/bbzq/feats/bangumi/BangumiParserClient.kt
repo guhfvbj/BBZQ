@@ -14,6 +14,8 @@ import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 import java.security.cert.CertificateFactory
+import java.util.zip.GZIPInputStream
+import java.util.zip.InflaterInputStream
 
 /** Direct client for servers compatible with BiliRoaming's regional parser protocol. */
 internal object BangumiParserClient {
@@ -26,6 +28,11 @@ internal object BangumiParserClient {
     data class Result(
         val body: String?,
         val error: String? = null,
+        val httpStatus: Int? = null,
+        val contentType: String? = null,
+        val byteSize: Int? = null,
+        val isJson: Boolean = false,
+        val isHtml: Boolean = false,
     ) {
         val isSuccess: Boolean get() = body?.contains(Regex("\"code\"\\s*:\\s*0\\b")) == true
     }
@@ -331,17 +338,47 @@ internal object BangumiParserClient {
                 requestMethod = "GET"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS
-                setRequestProperty("Accept-Encoding", "identity")
+                // Match BiliRoaming's parser transport. The server forwards
+                // these non-secret headers to the international upstream.
+                setRequestProperty("Accept-Encoding", "gzip,deflate")
+                setRequestProperty("Build", MAIN_BUILD)
+                setRequestProperty("x-from-bbzq", "bbzq")
                 setRequestProperty("platform-from-bbzq", platform)
                 extraHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
                 val code = responseCode
+                val contentType = getHeaderField("Content-Type")
                 val stream = if (code in 200..299) inputStream else errorStream
-                val body = stream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }
+                val encoding = getHeaderField("Content-Encoding")?.lowercase().orEmpty()
+                val bytes = stream?.use {
+                    when {
+                        encoding.contains("gzip") -> GZIPInputStream(it).use { gzip -> gzip.readBytes() }
+                        encoding.contains("deflate") -> InflaterInputStream(it).use { deflate -> deflate.readBytes() }
+                        else -> it.readBytes()
+                    }
+                }
+                val body = bytes?.toString(StandardCharsets.UTF_8)
+                val trimmed = body?.trimStart().orEmpty()
+                val isHtml = contentType?.contains("html", ignoreCase = true) == true ||
+                    trimmed.startsWith("<!doctype html", ignoreCase = true) ||
+                    trimmed.startsWith("<html", ignoreCase = true)
+                val isJson = contentType?.contains("json", ignoreCase = true) == true ||
+                    trimmed.startsWith("{") || trimmed.startsWith("[")
+                val error = when {
+                    code !in 200..299 -> "HTTP $code${safePreview(body)?.let { ": $it" }.orEmpty()}"
+                    !isJson -> "HTTP $code non-JSON response${contentType?.let { " ($it)" }.orEmpty()}, bytes=${bytes?.size ?: 0}${safePreview(body)?.let { ", preview=$it" }.orEmpty()}"
+                    else -> null
+                }
                 disconnect()
-                if (body == null) Result(null, "HTTP $code") else Result(body, if (code in 200..299) null else "HTTP $code")
+                Result(body, error, code, contentType, bytes?.size, isJson, isHtml)
             }
         }.getOrElse { Result(null, it.message ?: it.javaClass.simpleName) }
     }
+
+    private fun safePreview(body: String?): String? = body
+        ?.replace(Regex("\\s+"), " ")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let { io.github.bbzq.ModuleDebugLog.sanitize(it).take(160) }
 
     /**
      * The regional parser can be reached directly while the Cloudflare origin

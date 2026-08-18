@@ -27,10 +27,12 @@ object ModuleDebugLog {
         prefs.edit().putString(KEY_CONTENT, appendText(current, timestamped)).apply()
     }
 
-    fun read(prefs: SharedPreferences): String = prefs.getString(KEY_CONTENT, "").orEmpty()
+    fun read(prefs: SharedPreferences): String =
+        ModuleRemotePreferences.readString(KEY_CONTENT, prefs.getString(KEY_CONTENT, "").orEmpty())
 
     fun clear(prefs: SharedPreferences) {
         prefs.edit().remove(KEY_CONTENT).apply()
+        ModuleRemotePreferences.remove(KEY_CONTENT)
     }
 
     internal fun appendText(existing: String, line: String, maxChars: Int = MAX_CHARS): String {

@@ -299,6 +299,11 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
                     region, host, query, credential,
                     classLoader, ModuleSettings.isBangumiServerHttps(prefs, region),
                 )
+                log(
+                    "Bangumi MOSS parser result: region=${region.name}, status=${result.httpStatus ?: "transport"}, " +
+                        "contentType=${result.contentType ?: "unknown"}, bytes=${result.byteSize ?: 0}, " +
+                        "json=${result.isJson}, html=${result.isHtml}, error=${result.error ?: "none"}",
+                )
                 ParserAttempt(region, episode, result.body?.let(::normalizePayload), result.error)
             }
         }
@@ -338,6 +343,11 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         )
         val root = result.body?.let { runCatching { JSONObject(it) }.getOrNull() }
             ?: run {
+                log(
+                    "Bangumi MOSS season result: region=${region.name}, status=${result.httpStatus ?: "transport"}, " +
+                        "contentType=${result.contentType ?: "unknown"}, bytes=${result.byteSize ?: 0}, " +
+                        "json=${result.isJson}, html=${result.isHtml}, error=${result.error ?: "none"}",
+                )
                 log("Bangumi MOSS season lookup rejected: region=${region.name}, transport=${result.error ?: "ok"}")
                 return null
             }
