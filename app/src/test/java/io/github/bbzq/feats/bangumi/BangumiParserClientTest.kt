@@ -72,7 +72,10 @@ class BangumiParserClientTest {
             false,
         )
         assertEquals(false, url.substringAfter('?').contains("area="))
-        listOf("fnval=84948", "qn=120", "fourk=1", "force_host=0", "fnver=0").forEach {
+        listOf(
+            "fnval=84948", "qn=120", "fourk=1", "force_host=0", "fnver=0",
+            "s_locale=zh_SG", "c_locale=zh_SG", "lang=hans",
+        ).forEach {
             assertEquals(true, url.contains(it))
         }
     }

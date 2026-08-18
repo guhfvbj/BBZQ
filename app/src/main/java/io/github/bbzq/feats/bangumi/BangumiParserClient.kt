@@ -61,6 +61,9 @@ internal object BangumiParserClient {
             params.putIfAbsent("build", "1001310")
             params.putIfAbsent("mobi_app", "bstar_a")
             params.putIfAbsent("platform", "android")
+            params.putIfAbsent("s_locale", "zh_SG")
+            params.putIfAbsent("c_locale", "zh_SG")
+            params.putIfAbsent("lang", "hans")
         } else {
             params.putIfAbsent("appkey", MAIN_APP_KEY)
             params.putIfAbsent("build", MAIN_BUILD)
@@ -141,6 +144,9 @@ internal object BangumiParserClient {
             params.putIfAbsent("build", "1001310")
             params.putIfAbsent("mobi_app", "bstar_a")
             params.putIfAbsent("platform", "android")
+            params.putIfAbsent("s_locale", "zh_SG")
+            params.putIfAbsent("c_locale", "zh_SG")
+            params.putIfAbsent("lang", "hans")
         }
         return buildUrl(host, region.playUrlPath, sign(params, classLoader), useHttps)
     }
