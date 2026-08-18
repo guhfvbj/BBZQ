@@ -101,30 +101,30 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     private fun selectSearchRoute(query: Map<String, String>): Route? = when (query["type"]) {
         AREA_HK_TW_SEARCH_TYPE -> orderedRegions(BangumiRegion.HK).firstNotNullOfOrNull(::routeFor)
-        AREA_INTL_SEARCH_TYPE -> routeFor(BangumiRegion.TH)
+        AREA_INTL_SEARCH_TYPE -> routeFor(BangumiRegion.INTL)
         else -> null
     }?.copy(kind = RouteKind.SEARCH)
 
     private fun selectInternationalSearchRoute(query: Map<String, String>): Route? =
-        routeFor(BangumiRegion.TH)?.copy(kind = RouteKind.SEARCH)
+        routeFor(BangumiRegion.INTL)?.copy(kind = RouteKind.SEARCH)
 
     private fun selectSeasonRoute(query: Map<String, String>, isInternational: Boolean): Route? {
         val region = query["ep_id"]?.let(::findEpisodeRegion)
             ?: query["season_id"]?.let(::findSeasonRegion)
-            ?: if (isInternational) BangumiRegion.TH.takeIf { routeFor(it) != null } else defaultMainRegion()
+            ?: if (isInternational) BangumiRegion.INTL.takeIf { routeFor(it) != null } else defaultMainRegion()
         return region?.let(::routeFor)?.copy(kind = RouteKind.SEASON)
     }
 
     private fun selectSubtitleRoute(query: Map<String, String>): Route? =
         (query["ep_id"]?.let(::findEpisodeRegion)
             ?: currentActiveRegion()
-            ?: BangumiRegion.TH.takeIf { routeFor(it) != null })
-            ?.takeIf { it == BangumiRegion.TH }
+            ?: BangumiRegion.INTL.takeIf { routeFor(it) != null })
+            ?.takeIf { it == BangumiRegion.INTL }
             ?.let(::routeFor)
             ?.copy(kind = RouteKind.SUBTITLE)
 
     private fun orderedRegions(preferred: BangumiRegion?): List<BangumiRegion> =
-        (listOfNotNull(preferred) + listOf(BangumiRegion.HK, BangumiRegion.TW, BangumiRegion.TH, BangumiRegion.CN)).distinct()
+        (listOfNotNull(preferred) + listOf(BangumiRegion.HK, BangumiRegion.TW, BangumiRegion.INTL, BangumiRegion.CN)).distinct()
 
     /**
      * A normal detail-page request has no region marker. Pick the first
@@ -177,7 +177,7 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
     private fun appendAreaSearchNavigation(raw: String): String = runCatching {
         val hasHkTw = ModuleSettings.getBangumiServerHost(prefs, BangumiRegion.HK) != null ||
             ModuleSettings.getBangumiServerHost(prefs, BangumiRegion.TW) != null
-        val hasIntl = ModuleSettings.getBangumiServerHost(prefs, BangumiRegion.TH) != null
+        val hasIntl = ModuleSettings.getBangumiServerHost(prefs, BangumiRegion.INTL) != null
         if (!hasHkTw && !hasIntl) return@runCatching raw
         val root = JSONObject(raw)
         val data = root.optJSONObject("data") ?: return@runCatching raw

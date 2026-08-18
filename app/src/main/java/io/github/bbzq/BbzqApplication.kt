@@ -6,6 +6,9 @@ class BbzqApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         ModuleRemotePreferences.init(this)
+        ModuleSettings.migrateBangumiInternationalSettings(
+            getSharedPreferences(ModuleSettings.PREFS_NAME, MODE_PRIVATE),
+        )
         applyDesktopIconSetting()
     }
 

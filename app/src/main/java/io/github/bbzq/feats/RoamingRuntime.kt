@@ -7,6 +7,7 @@ import android.content.res.AssetManager
 import android.content.res.Resources
 import io.github.bbzq.ModuleDebugLog
 import io.github.bbzq.ModuleSettingsBridge
+import io.github.bbzq.ModuleSettings
 import kotlin.LazyThreadSafetyMode
 import io.github.bbzq.feats.hook.BottomBarHook
 import io.github.bbzq.feats.hook.AutoLikeHook
@@ -104,6 +105,7 @@ object RoamingRuntime {
         }
 
         ModuleSettingsBridge.attach(env.hostContext, xposed)
+        ModuleSettings.migrateBangumiInternationalSettings(env.prefs)
         if (processScope == ProcessScope.MAIN) {
             HookUpdateChecker.check(env)
         }

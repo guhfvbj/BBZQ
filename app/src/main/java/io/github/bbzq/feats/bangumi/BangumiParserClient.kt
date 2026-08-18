@@ -54,9 +54,9 @@ internal object BangumiParserClient {
         useHttps: Boolean = true,
     ): Result {
         val params = LinkedHashMap(query)
-        params["area"] = region.name.lowercase()
+        if (region == BangumiRegion.INTL) params.remove("area") else params["area"] = region.name.lowercase()
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
-        if (region == BangumiRegion.TH) {
+        if (region == BangumiRegion.INTL) {
             params.putIfAbsent("appkey", "7d089525d3611b1c")
             params.putIfAbsent("build", "1001310")
             params.putIfAbsent("mobi_app", "bstar_a")
@@ -79,8 +79,8 @@ internal object BangumiParserClient {
         useHttps: Boolean = true,
     ): Result {
         val params = LinkedHashMap(query)
-        val path = if (region == BangumiRegion.TH) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
-        if (region == BangumiRegion.TH) {
+        val path = if (region == BangumiRegion.INTL) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
+        if (region == BangumiRegion.INTL) {
             params["type"] = internationalSearchType(params["type"])
             params.putAll(mapOf(
                 "appkey" to "7d089525d3611b1c",
@@ -109,7 +109,7 @@ internal object BangumiParserClient {
     ): Result {
         val params = LinkedHashMap(query)
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
-        val path = if (region == BangumiRegion.TH) {
+        val path = if (region == BangumiRegion.INTL) {
             params.putIfAbsent("mobi_app", "bstar_a")
             params.putIfAbsent("build", "1001310")
             params.putIfAbsent("s_locale", "zh_SG")
@@ -134,9 +134,9 @@ internal object BangumiParserClient {
         useHttps: Boolean = true,
     ): String {
         val params = LinkedHashMap(query)
-        params["area"] = region.name.lowercase()
+        if (region == BangumiRegion.INTL) params.remove("area") else params["area"] = region.name.lowercase()
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
-        if (region == BangumiRegion.TH) {
+        if (region == BangumiRegion.INTL) {
             params.putIfAbsent("appkey", "7d089525d3611b1c")
             params.putIfAbsent("build", "1001310")
             params.putIfAbsent("mobi_app", "bstar_a")
@@ -154,8 +154,8 @@ internal object BangumiParserClient {
         useHttps: Boolean = true,
     ): String {
         val params = LinkedHashMap(query)
-        val path = if (region == BangumiRegion.TH) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
-        if (region == BangumiRegion.TH) {
+        val path = if (region == BangumiRegion.INTL) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
+        if (region == BangumiRegion.INTL) {
             params["type"] = internationalSearchType(params["type"])
             params.putAll(mapOf("appkey" to "7d089525d3611b1c", "build" to "1001310", "mobi_app" to "bstar_a", "platform" to "android", "s_locale" to "zh_SG", "c_locale" to "zh_SG", "lang" to "hans"))
         } else {
@@ -179,7 +179,7 @@ internal object BangumiParserClient {
     ): String {
         val params = LinkedHashMap(query).apply {
             credential?.accessKey?.takeIf(String::isNotBlank)?.let { put("access_key", it) }
-            if (region == BangumiRegion.TH) {
+            if (region == BangumiRegion.INTL) {
                 putIfAbsent("mobi_app", "bstar_a")
                 putIfAbsent("build", "1001310")
                 putIfAbsent("s_locale", "zh_SG")
@@ -188,7 +188,7 @@ internal object BangumiParserClient {
                 putIfAbsent("build", "6400000")
             }
         }
-        val path = if (region == BangumiRegion.TH) {
+        val path = if (region == BangumiRegion.INTL) {
             "/intl/gateway/v2/ogv/view/app/season"
         } else {
             "/pgc/view/v2/app/season"
@@ -260,7 +260,7 @@ internal object BangumiParserClient {
         }
         val required = buildSet {
             addAll(setOf("search", "season", "playurl"))
-            if (region == BangumiRegion.TH) add("subtitle")
+            if (region == BangumiRegion.INTL) add("subtitle")
         }
         if (declared != null && !declared.capabilities.containsAll(required)) {
             return ProbeResult("检查失败：服务器缺少${(required - declared.capabilities).joinToString("、")}接口")
@@ -272,7 +272,7 @@ internal object BangumiParserClient {
         if (declared != null) {
             return ProbeResult("BBZQ兼容检查通过：${region.label}服务器已声明所需接口")
         }
-        val params = if (region == BangumiRegion.TH) {
+        val params = if (region == BangumiRegion.INTL) {
             mapOf("ep_id" to "285145", "s_locale" to "zh_SG")
         } else {
             mapOf("cid" to "120453316", "ep_id" to "285145", "otype" to "json", "fnval" to "16", "module" to "pgc", "platform" to "android", "test" to "true")

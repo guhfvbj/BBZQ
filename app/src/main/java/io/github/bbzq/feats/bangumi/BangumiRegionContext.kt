@@ -29,7 +29,7 @@ internal object BangumiRegionContext {
             seasonRegion(seasonId),
             currentActiveRegion(),
         )
-        return (known + listOf(BangumiRegion.HK, BangumiRegion.TW, BangumiRegion.TH)).distinct()
+        return (known + listOf(BangumiRegion.HK, BangumiRegion.TW, BangumiRegion.INTL)).distinct()
     }
 
     fun episodeRegion(id: Long): BangumiRegion? =

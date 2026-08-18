@@ -1,6 +1,7 @@
 package io.github.bbzq.feats.bangumi
 
 import io.github.bbzq.ModuleSettings
+import io.github.bbzq.BangumiRegion
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -50,5 +51,29 @@ class BangumiParserClientTest {
                 true,
             ),
         )
+    }
+
+    @Test
+    fun `international play url omits area but preserves quality parameters`() {
+        val url = BangumiParserClient.buildPlayUrl(
+            BangumiRegion.INTL,
+            "parser.example",
+            linkedMapOf(
+                "ep_id" to "1",
+                "area" to "th",
+                "fnval" to "84948",
+                "qn" to "120",
+                "fourk" to "1",
+                "force_host" to "0",
+                "fnver" to "0",
+            ),
+            null,
+            javaClass.classLoader!!,
+            false,
+        )
+        assertEquals(false, url.substringAfter('?').contains("area="))
+        listOf("fnval=84948", "qn=120", "fourk=1", "force_host=0", "fnver=0").forEach {
+            assertEquals(true, url.contains(it))
+        }
     }
 }
