@@ -9,6 +9,8 @@ import io.github.bbzq.ModuleSettingsBridge
 import kotlin.LazyThreadSafetyMode
 import io.github.bbzq.feats.hook.BottomBarHook
 import io.github.bbzq.feats.hook.AutoLikeHook
+import io.github.bbzq.feats.hook.BangumiParserHook
+import io.github.bbzq.feats.hook.BangumiMossPlayUrlHook
 import io.github.bbzq.feats.hook.AccessKeyHook
 import io.github.bbzq.feats.hook.ChronosPromotionHook
 import io.github.bbzq.feats.hook.CustomThemeHook
@@ -142,6 +144,8 @@ object RoamingRuntime {
                 ::HomeComponentHideHook,
                 ::HomeRecommendAdHook,
                 ::HomeRecommendTabHook,
+                ::BangumiParserHook,
+                ::BangumiMossPlayUrlHook,
                 ::HomeRecommendPreloadHook,
                 ::DynamicPageHook,
                 ::HomeTopBarPurifyHook,
@@ -276,4 +280,3 @@ abstract class BaseRoamingHook(
 
     abstract fun startHook()
 }
-

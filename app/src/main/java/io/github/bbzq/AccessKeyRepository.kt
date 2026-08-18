@@ -22,8 +22,19 @@ object AccessKeyRepository {
             ?.takeIf(::looksLikeAccessKey)
     }
 
+    /** Cache a credential observed on an already-authenticated host request. */
+    fun capture(prefs: SharedPreferences, value: String?): Boolean {
+        val accessKey = value?.takeIf(::looksLikeAccessKey) ?: return false
+        if (prefs.getString(ModuleSettings.KEY_LAST_ACCESS_KEY, null) == accessKey) return false
+        prefs.edit().putString(ModuleSettings.KEY_LAST_ACCESS_KEY, accessKey).apply()
+        return true
+    }
+
     fun looksLikeAccessKey(value: String): Boolean =
         ACCESS_KEY_PATTERN.matches(value)
 
-    private val ACCESS_KEY_PATTERN = Regex("[0-9a-fA-F]{32}")
+    // Current Bilibili clients use a long opaque access token rather than the
+    // old 32-character hexadecimal key. Keep validation strict enough to
+    // reject malformed input without discarding the host's valid login token.
+    private val ACCESS_KEY_PATTERN = Regex("[A-Za-z0-9._~-]{16,1024}")
 }

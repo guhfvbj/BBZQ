@@ -23,6 +23,16 @@ class AccessKeyHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     private fun readAccessKey(): String? {
+        env.symbols?.account?.restore(classLoader)?.let { symbols ->
+            val account = runCatching {
+                val args = if (symbols.getMethod.parameterCount == 0) emptyArray() else arrayOf<Any?>(env.hostContext)
+                symbols.getMethod.invoke(null, *args)
+            }.getOrNull()
+            val accessKey = account?.let { target ->
+                runCatching { symbols.accessKeyMethod.invoke(target) as? String }.getOrNull()
+            }?.takeIf(AccessKeyRepository::looksLikeAccessKey)
+            if (accessKey != null) return accessKey
+        }
         val accountClass = ACCOUNT_CLASS_NAMES.firstNotNullOfOrNull(classLoader::findClassOrNull) ?: run {
             log("AccessKey: BiliAccounts class not found")
             return null

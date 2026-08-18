@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package io.github.bbzq.proto;
+
+import "google/protobuf/any.proto";
+
+option java_package = "io.github.bbzq.proto";
+option java_multiple_files = true;
+option optimize_for = LITE_RUNTIME;
+
+enum CodeType {
+  NOCODE = 0;
+  CODE264 = 1;
+  CODE265 = 2;
+  CODEAV1 = 3;
+}
+
+message PlayViewReq {
+  optional int64 ep_id = 1;
+  optional int64 cid = 2;
+  optional int64 qn = 3;
+  optional int32 fnver = 4;
+  optional int32 fnval = 5;
+  optional int32 download = 6;
+  optional int32 force_host = 7;
+  optional bool fourk = 8;
+  optional CodeType prefer_codec_type = 12;
+  optional int64 season_id = 20;
+}
+
+message StreamInfo {
+  optional int32 quality = 1;
+  optional string format = 2;
+  optional string description = 3;
+  optional int32 err_code = 4;
+  optional bool need_vip = 6;
+  optional bool need_login = 7;
+  optional bool intact = 8;
+  optional bool no_rexcode = 9;
+  optional int64 attribute = 10;
+  optional string new_description = 11;
+  optional string display_desc = 12;
+  optional string superscript = 13;
+}
+message DashVideo {
+  optional string base_url = 1;
+  repeated string backup_url = 2;
+  optional int32 bandwidth = 3;
+  optional int32 codecid = 4;
+  optional string md5 = 5;
+  optional int64 size = 6;
+  optional int32 audio_id = 7;
+  optional bool no_rexcode = 8;
+}
+message ResponseUrl {
+  optional int32 order = 1;
+  optional int64 length = 2;
+  optional int64 size = 3;
+  optional string url = 4;
+  repeated string backup_url = 5;
+  optional string md5 = 6;
+}
+message SegmentVideo { repeated ResponseUrl segment = 1; }
+message Stream {
+  optional StreamInfo stream_info = 1;
+  oneof content {
+    DashVideo dash_video = 2;
+    SegmentVideo segment_video = 3;
+  }
+}
+message DashItem {
+  optional int32 id = 1;
+  optional string base_url = 2;
+  repeated string backup_url = 3;
+  optional int32 bandwidth = 4;
+  optional int32 codecid = 5;
+  optional string md5 = 6;
+  optional int64 size = 7;
+}
+message VideoInfo {
+  optional int32 quality = 1;
+  optional string format = 2;
+  optional int64 timelength = 3;
+  optional int32 video_codecid = 4;
+  repeated Stream stream_list = 5;
+  repeated DashItem dash_audio = 6;
+}
+message PlayViewReply {
+  optional VideoInfo video_info = 1;
+  optional bytes play_conf = 2;
+  optional bytes business = 3;
+  optional bytes event = 4;
+  optional bytes view_info = 5;
+}
+message PlayViewUniteReply {
+  optional VideoInfo vod_info = 1;
+  optional bytes play_arc_conf = 2;
+  optional bytes play_device_conf = 3;
+  optional bytes event = 4;
+  optional google.protobuf.Any supplement = 5;
+  optional bytes play_arc = 6;
+  optional bytes qn_trial_info = 7;
+  optional bytes history = 8;
+  optional bytes view_info = 9;
+}
+message VideoVod {
+  optional int64 aid = 1;
+  optional int64 cid = 2;
+  optional int64 qn = 3;
+  optional int32 fnver = 4;
+  optional int32 fnval = 5;
+  optional int32 download = 6;
+  optional int32 force_host = 7;
+  optional bool fourk = 8;
+  optional CodeType prefer_code_type = 9;
+}
+message PlayViewUniteReq {
+  optional VideoVod vod = 1;
+  map<string, string> extra_content = 4;
+}

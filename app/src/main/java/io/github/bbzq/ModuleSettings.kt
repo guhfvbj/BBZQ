@@ -2,8 +2,37 @@
 
 import android.content.SharedPreferences
 
+enum class BangumiRegion(
+    val label: String,
+    val serverKey: String,
+    val credentialKey: String,
+    val httpsKey: String,
+    val defaultPlatform: String,
+    val playUrlPath: String,
+) {
+    CN("大陆", "bangumi_server_cn", "bangumi_server_cn_credential", "bangumi_server_cn_https", "android", "/pgc/player/api/playurl"),
+    HK("港澳", "bangumi_server_hk", "bangumi_server_hk_credential", "bangumi_server_hk_https", "android", "/pgc/player/api/playurl"),
+    TW("台湾", "bangumi_server_tw", "bangumi_server_tw_credential", "bangumi_server_tw_https", "android", "/pgc/player/api/playurl"),
+    TH("东南亚", "bangumi_server_th", "bangumi_server_th_credential", "bangumi_server_th_https", "bstar_a", "/intl/gateway/v2/ogv/playurl"),
+}
+
+data class BangumiServerCredential(
+    val accessKey: String,
+    val platform: String?,
+)
+
 object ModuleSettings {
     const val PREFS_NAME = "bbzq_settings"
+    const val KEY_ADD_BANGUMI = "add_bangumi"
+    const val KEY_BANGUMI_SUBTITLE_HANT_TO_HANS_ENABLED = "bangumi_subtitle_hant_to_hans"
+    const val KEY_BANGUMI_SERVER_CN = "bangumi_server_cn"
+    const val KEY_BANGUMI_SERVER_HK = "bangumi_server_hk"
+    const val KEY_BANGUMI_SERVER_TW = "bangumi_server_tw"
+    const val KEY_BANGUMI_SERVER_TH = "bangumi_server_th"
+    const val KEY_BANGUMI_SERVER_CN_CREDENTIAL = "bangumi_server_cn_credential"
+    const val KEY_BANGUMI_SERVER_HK_CREDENTIAL = "bangumi_server_hk_credential"
+    const val KEY_BANGUMI_SERVER_TW_CREDENTIAL = "bangumi_server_tw_credential"
+    const val KEY_BANGUMI_SERVER_TH_CREDENTIAL = "bangumi_server_th_credential"
     const val KEY_MINI_PROGRAM_ENABLED = "mini_program"
     const val KEY_PURIFY_SHARE_ENABLED = "purify_share"
     const val KEY_SKIP_REWARD_AD_ENABLED = "skip_reward_ad"
@@ -198,6 +227,10 @@ object ModuleSettings {
     )
 
     val exportableSwitchSpecs = listOf(
+        ExportableConfigSpec(KEY_ADD_BANGUMI, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_ADD_BANGUMI, false) },
+        ExportableConfigSpec(KEY_BANGUMI_SUBTITLE_HANT_TO_HANS_ENABLED, ExportableValueType.BOOLEAN) {
+            it.getBoolean(KEY_BANGUMI_SUBTITLE_HANT_TO_HANS_ENABLED, false)
+        },
         ExportableConfigSpec(KEY_MINI_PROGRAM_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_MINI_PROGRAM_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_SHARE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_SHARE_ENABLED, false) },
         ExportableConfigSpec(KEY_SKIP_REWARD_AD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SKIP_REWARD_AD_ENABLED, false) },
@@ -291,6 +324,14 @@ object ModuleSettings {
     )
 
     val exportableManualSpecs = buildList<ExportableConfigSpec> {
+        BangumiRegion.entries.forEach { region ->
+            add(ExportableConfigSpec(region.serverKey, ExportableValueType.STRING) { prefs ->
+                getBangumiServerHost(prefs, region).orEmpty()
+            })
+            add(ExportableConfigSpec(region.httpsKey, ExportableValueType.BOOLEAN) { prefs ->
+                isBangumiServerHttps(prefs, region)
+            })
+        }
         add(ExportableConfigSpec(KEY_HOME_RECOMMEND_TITLE_KEYWORDS, ExportableValueType.STRING) { it.getString(KEY_HOME_RECOMMEND_TITLE_KEYWORDS, "").orEmpty() })
         add(ExportableConfigSpec(KEY_COMMENT_KEYWORDS, ExportableValueType.STRING) { it.getString(KEY_COMMENT_KEYWORDS, "").orEmpty() })
         add(ExportableConfigSpec(KEY_COMMENT_MIN_LEVEL, ExportableValueType.INT) { getCommentMinLevel(it) })
@@ -647,6 +688,50 @@ object ModuleSettings {
 
     fun isPurifyShareEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_PURIFY_SHARE_ENABLED, false)
+
+    fun isAddBangumiEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_ADD_BANGUMI, false)
+
+    fun isBangumiSubtitleHantToHansEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_BANGUMI_SUBTITLE_HANT_TO_HANS_ENABLED, false)
+
+    fun getBangumiServerHost(prefs: SharedPreferences, region: BangumiRegion): String? =
+        normalizeBangumiServerHost(prefs.getString(region.serverKey, null))
+
+    fun isBangumiServerHttps(prefs: SharedPreferences, region: BangumiRegion): Boolean =
+        prefs.getBoolean(region.httpsKey, true)
+
+    fun getBangumiServerCredential(prefs: SharedPreferences, region: BangumiRegion): BangumiServerCredential? =
+        parseBangumiServerCredential(prefs.getString(region.credentialKey, null))
+
+    fun normalizeBangumiServerHost(value: String?): String? {
+        val raw = value.orEmpty().trim()
+        if (raw.isEmpty()) return null
+        val normalized = if (raw.contains("://")) raw else "https://$raw"
+        val uri = runCatching { java.net.URI(normalized) }.getOrNull() ?: return null
+        if ((!uri.scheme.equals("https", ignoreCase = true) && !uri.scheme.equals("http", ignoreCase = true)) ||
+            uri.host.isNullOrBlank() ||
+            uri.userInfo != null || uri.rawQuery != null || uri.rawFragment != null ||
+            (uri.rawPath != null && uri.rawPath !in setOf("", "/"))
+        ) return null
+        val host = uri.host.lowercase()
+        if (host.length !in 1..253 || host.any(Char::isWhitespace)) return null
+        return buildString {
+            append(host)
+            if (uri.port in 1..65535) append(':').append(uri.port)
+        }
+    }
+
+    fun parseBangumiServerCredential(value: String?): BangumiServerCredential? {
+        val raw = value.orEmpty().trim()
+        if (raw.isEmpty()) return null
+        val parts = raw.split(';', limit = 2).map(String::trim)
+        val accessKey = parts.firstOrNull().orEmpty()
+        if (accessKey.isEmpty() || accessKey.any(Char::isWhitespace)) return null
+        val platform = parts.getOrNull(1).orEmpty().ifEmpty { null }
+        if (platform?.any { it.isWhitespace() || it == ';' } == true) return null
+        return BangumiServerCredential(accessKey, platform)
+    }
 
     fun isCustomBottomBarEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_CUSTOM_BOTTOM_BAR_ENABLED, false)

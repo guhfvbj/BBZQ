@@ -11,6 +11,8 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.text.SpannableString
 import android.text.method.LinkMovementMethod
@@ -32,6 +34,7 @@ import io.github.bbzq.DesktopIconHelper
 import io.github.bbzq.R
 import okhttp3.Call
 import org.json.JSONObject
+import io.github.bbzq.feats.bangumi.BangumiParserClient
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -95,6 +98,7 @@ class SettingsContentFactory(
     private lateinit var mineComponentPickerSummary: TextView
     private lateinit var symbolScanStatusSummary: TextView
     private lateinit var customCdnHostSummary: TextView
+    private val bangumiServerSummaries = mutableMapOf<BangumiRegion, TextView>()
     /** 「检查更新」行的摘要文本视图，用于回显检查状态；界面销毁时置空避免泄漏。 */
     private var updateCheckSummaryView: TextView? = null
 
@@ -147,6 +151,9 @@ class SettingsContentFactory(
             else -> {
                 pageRoot.addView(createSectionLabel(context.getString(R.string.section_share_link)))
                 pageRoot.addView(createSectionCard(shareRows()))
+
+                pageRoot.addView(createSectionLabel(context.getString(R.string.section_bangumi_parser)))
+                pageRoot.addView(createSectionCard(bangumiParserRows()))
 
                 pageRoot.addView(createSectionLabel(context.getString(R.string.section_copy_enhance)))
                 pageRoot.addView(createSectionCard(copyRows()))
@@ -222,6 +229,22 @@ class SettingsContentFactory(
                 false,
             ),
         )
+    }
+
+    private fun bangumiParserRows(): List<View> = buildList {
+        add(createSwitchRow(
+            context.getString(R.string.bangumi_unlock_title),
+            context.getString(R.string.bangumi_unlock_summary),
+            ModuleSettings.KEY_ADD_BANGUMI,
+            false,
+        ))
+        BangumiRegion.entries.forEach { region -> add(createBangumiServerRow(region)) }
+        add(createSwitchRow(
+            context.getString(R.string.bangumi_subtitle_hant_to_hans_title),
+            context.getString(R.string.bangumi_subtitle_hant_to_hans_summary),
+            ModuleSettings.KEY_BANGUMI_SUBTITLE_HANT_TO_HANS_ENABLED,
+            false,
+        ))
     }
 
     private fun copyRows(): List<View> {
@@ -1541,6 +1564,118 @@ class SettingsContentFactory(
         }
     }
 
+    private fun createBangumiServerRow(region: BangumiRegion): View {
+        val summary = TextView(context).apply {
+            textSize = 12f
+            setTextColor(summaryTextColor)
+            setPadding(0, dp(4), 0, 0)
+        }
+        bangumiServerSummaries[region] = summary
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showBangumiServerDialog(region) }
+            addView(TextView(context).apply {
+                text = context.getString(R.string.bangumi_server_title, region.label)
+                textSize = 15f
+                setTextColor(titleTextColor)
+            })
+            addView(summary)
+        }
+    }
+
+    private fun showBangumiServerDialog(region: BangumiRegion) {
+        val hostInput = EditText(context).apply {
+            setSingleLine(true)
+            setSelectAllOnFocus(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            hint = "https://example.com"
+            setText(ModuleSettings.getBangumiServerHost(prefs, region).orEmpty())
+        }
+        val credentialInput = EditText(context).apply {
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            hint = context.getString(R.string.bangumi_server_credential_hint)
+            val credential = ModuleSettings.getBangumiServerCredential(prefs, region)
+            setText(credential?.let { "${it.accessKey};${it.platform.orEmpty()}" }.orEmpty())
+        }
+        val httpsCheckBox = CheckBox(context).apply {
+            text = context.getString(R.string.bangumi_server_https)
+            isChecked = ModuleSettings.isBangumiServerHttps(prefs, region)
+        }
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), 0, dp(24), 0)
+            addView(hostInput)
+            addView(httpsCheckBox)
+            addView(credentialInput)
+        }
+        val dialog = AlertDialog.Builder(context)
+            .setTitle(context.getString(R.string.bangumi_server_dialog_title, region.label))
+            .setMessage(R.string.bangumi_server_dialog_message)
+            .setView(content)
+            .setNeutralButton(R.string.bangumi_server_test, null)
+            .setNegativeButton(R.string.dialog_cancel, null)
+            .setPositiveButton(R.string.dialog_save, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val rawHost = hostInput.text?.toString().orEmpty().trim()
+                val host = ModuleSettings.normalizeBangumiServerHost(rawHost)
+                if (rawHost.isNotEmpty() && host == null) {
+                    hostInput.error = context.getString(R.string.bangumi_server_invalid)
+                    return@setOnClickListener
+                }
+                val rawCredential = credentialInput.text?.toString().orEmpty().trim()
+                if (rawCredential.isNotEmpty() && ModuleSettings.parseBangumiServerCredential(rawCredential) == null) {
+                    credentialInput.error = context.getString(R.string.bangumi_server_credential_invalid)
+                    return@setOnClickListener
+                }
+                prefs.edit().apply {
+                    if (host == null) {
+                        remove(region.serverKey)
+                        remove(region.credentialKey)
+                        remove(region.httpsKey)
+                    } else {
+                        putString(region.serverKey, host)
+                        putBoolean(region.httpsKey, httpsCheckBox.isChecked)
+                        putString(region.credentialKey, rawCredential.ifEmpty { null })
+                    }
+                }.apply()
+                refresh()
+                dialog.dismiss()
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val rawHost = hostInput.text?.toString().orEmpty().trim()
+                val host = ModuleSettings.normalizeBangumiServerHost(rawHost)
+                if (rawHost.isEmpty()) {
+                    hostInput.error = context.getString(R.string.bangumi_server_test_empty)
+                    return@setOnClickListener
+                }
+                if (host == null) {
+                    hostInput.error = context.getString(R.string.bangumi_server_invalid)
+                    return@setOnClickListener
+                }
+                val rawCredential = credentialInput.text?.toString().orEmpty().trim()
+                if (rawCredential.isNotEmpty() && ModuleSettings.parseBangumiServerCredential(rawCredential) == null) {
+                    credentialInput.error = context.getString(R.string.bangumi_server_credential_invalid)
+                    return@setOnClickListener
+                }
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = false
+                Thread {
+                    val result = BangumiParserClient.probe(region, host, httpsCheckBox.isChecked, rawCredential)
+                    Handler(Looper.getMainLooper()).post {
+                        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = true
+                        Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                    }
+                }.start()
+            }
+        }
+        dialog.show()
+    }
+
     private fun showCustomCdnHostDialog() {
         val endpoints = ModuleSettings.cdnEndpoints
         val current = ModuleSettings.getCustomCdnHost(prefs)
@@ -2119,6 +2254,17 @@ class SettingsContentFactory(
                 context.getString(R.string.custom_cdn_host_empty_summary)
             } else {
                 context.getString(R.string.custom_cdn_host_current_summary, host)
+            }
+        }
+        bangumiServerSummaries.forEach { (region, summary) ->
+            val host = ModuleSettings.getBangumiServerHost(prefs, region)
+            summary.text = if (host == null) {
+                context.getString(R.string.bangumi_server_empty_summary)
+            } else {
+                context.getString(
+                    R.string.bangumi_server_current_summary,
+                    "${if (ModuleSettings.isBangumiServerHttps(prefs, region)) "https" else "http"}://$host",
+                )
             }
         }
         bottomBarItemCheckBoxes.forEach { (id, checkBox) ->

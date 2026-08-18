@@ -6,9 +6,11 @@ import io.github.bbzq.feats.RoamingEnv
 import io.github.bbzq.feats.hookBefore
 import io.github.bbzq.feats.symbol.RestoredHomeRecommendTabSymbols
 import java.lang.reflect.Field
+import java.lang.reflect.Modifier
 
 class HomeRecommendTabHook(env: RoamingEnv) : BaseRoamingHook(env) {
     private var removeAllSkippedLogged = false
+    private var bangumiInjectionFailureLogged = false
 
     override fun startHook() {
         if (env.processName != env.packageName) return
@@ -38,22 +40,34 @@ class HomeRecommendTabHook(env: RoamingEnv) : BaseRoamingHook(env) {
         symbols: RestoredHomeRecommendTabSymbols,
     ) {
         val original = args.firstOrNull() as? List<*> ?: return
-        if (original.isEmpty()) return
+        val tabs = original.toMutableList()
+        if (ModuleSettings.isAddBangumiEnabled(prefs)) {
+            tabs.clear()
+            tabs.addAll(injectBangumiTabs(original, symbols))
+        }
+        val tabsChanged = tabs.size != original.size
+        if (tabs.isEmpty()) return
 
-        val entriesByIndex = original.mapIndexedNotNull { index, item ->
+        val entriesByIndex = tabs.mapIndexedNotNull { index, item ->
             item?.extractTabEntry(index, symbols)
         }.associateBy { it.index }
-        if (entriesByIndex.isEmpty()) return
+        if (entriesByIndex.isEmpty()) {
+            if (tabsChanged) args[0] = tabs
+            return
+        }
 
         saveKnownTabs(entriesByIndex.values.sortedBy { it.order })
 
         val enabled = ModuleSettings.isCustomHomeRecommendTabFilterEnabled(prefs)
         val hiddenTabs = ModuleSettings.getHiddenHomeRecommendTabs(prefs)
-        if (!enabled || hiddenTabs.isEmpty()) return
+        if (!enabled || hiddenTabs.isEmpty()) {
+            if (tabsChanged) args[0] = tabs
+            return
+        }
 
         val filtered = ArrayList<Any?>(original.size)
         var removed = 0
-        original.forEachIndexed { index, item ->
+        tabs.forEachIndexed { index, item ->
             val entry = entriesByIndex[index]
             if (entry != null && entry.key in hiddenTabs) {
                 removed += 1
@@ -62,7 +76,10 @@ class HomeRecommendTabHook(env: RoamingEnv) : BaseRoamingHook(env) {
             }
         }
 
-        if (removed == 0) return
+        if (removed == 0) {
+            if (tabsChanged) args[0] = tabs
+            return
+        }
         if (filtered.isEmpty()) {
             if (!removeAllSkippedLogged) {
                 removeAllSkippedLogged = true
@@ -73,6 +90,66 @@ class HomeRecommendTabHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
         args[0] = filtered
         log("HomeRecommendTabs removed $removed tab(s)")
+    }
+
+    private fun injectBangumiTabs(
+        tabs: List<Any?>,
+        symbols: RestoredHomeRecommendTabSymbols,
+    ): List<Any?> {
+        val tabClass = symbols.idField.declaringClass
+        val constructor = runCatching {
+            tabClass.getDeclaredConstructor().apply { isAccessible = true }
+        }.getOrNull()
+        if (constructor == null) {
+            logBangumiInjectionFailure("Tab resource has no no-arg constructor")
+            return tabs
+        }
+
+        return BangumiHomeTabs.appendMissing(
+            existing = tabs,
+            uriOf = { item -> item.readString(symbols.uriField) },
+        ) { spec ->
+            val tab = runCatching { constructor.newInstance() }.getOrNull()
+            if (tab == null) {
+                logBangumiInjectionFailure("Unable to construct ${spec.title}")
+                return@appendMissing null
+            }
+            runCatching {
+                symbols.idField.set(tab, spec.id)
+                symbols.titleField.set(tab, spec.title)
+                symbols.uriField.set(tab, spec.uri)
+                symbols.reporterIdField?.set(tab, spec.reporterId)
+                findPositionField(tabClass)?.setPosition(tab, spec.position)
+                tab
+            }.onFailure {
+                logBangumiInjectionFailure("Unable to initialize ${spec.title}: ${it.javaClass.simpleName}")
+            }.getOrNull()
+        }
+    }
+
+    private fun logBangumiInjectionFailure(message: String) {
+        if (bangumiInjectionFailureLogged) return
+        bangumiInjectionFailureLogged = true
+        log("HomeRecommendTabs bangumi injection skipped: $message")
+    }
+
+    private fun findPositionField(type: Class<*>): Field? = generateSequence(type) { it.superclass }
+        .flatMap { it.declaredFields.asSequence() }
+        .firstOrNull { field ->
+            !Modifier.isStatic(field.modifiers) &&
+                !Modifier.isFinal(field.modifiers) &&
+                field.name in POSITION_FIELD_NAMES &&
+                field.type in POSITION_FIELD_TYPES
+        }
+        ?.apply { isAccessible = true }
+
+    private fun Field.setPosition(target: Any, position: Int) {
+        when (type) {
+            Int::class.javaPrimitiveType, Int::class.javaObjectType -> set(target, position)
+            Long::class.javaPrimitiveType, Long::class.javaObjectType -> set(target, position.toLong())
+            Short::class.javaPrimitiveType, Short::class.javaObjectType -> set(target, position.toShort())
+            else -> Unit
+        }
     }
 
     private fun Any.extractTabEntry(
@@ -153,5 +230,14 @@ class HomeRecommendTabHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     private companion object {
         private const val ITEM_SEPARATOR = "\t"
+        private val POSITION_FIELD_NAMES = setOf("pos", "position", "order")
+        private val POSITION_FIELD_TYPES = setOf(
+            Int::class.javaPrimitiveType,
+            Int::class.javaObjectType,
+            Long::class.javaPrimitiveType,
+            Long::class.javaObjectType,
+            Short::class.javaPrimitiveType,
+            Short::class.javaObjectType,
+        )
     }
 }
