@@ -12,6 +12,7 @@ import kotlin.LazyThreadSafetyMode
 import io.github.bbzq.feats.hook.BottomBarHook
 import io.github.bbzq.feats.hook.AutoLikeHook
 import io.github.bbzq.feats.hook.BangumiParserHook
+import io.github.bbzq.feats.hook.BangumiSearchMossHook
 import io.github.bbzq.feats.hook.BangumiMossPlayUrlHook
 import io.github.bbzq.feats.hook.BangumiInteractiveMossHook
 import io.github.bbzq.feats.hook.AccessKeyHook
@@ -149,6 +150,7 @@ object RoamingRuntime {
                 ::HomeRecommendAdHook,
                 ::HomeRecommendTabHook,
                 ::BangumiParserHook,
+                ::BangumiSearchMossHook,
                 ::BangumiMossPlayUrlHook,
                 ::BangumiInteractiveMossHook,
                 ::HomeRecommendPreloadHook,
