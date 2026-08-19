@@ -51,6 +51,64 @@ class AddItemsBuilderResponse private constructor() {
     }
 }
 
+class EmptyResponse private constructor(
+    val keyword: String,
+    val pages: Int,
+) {
+    companion object {
+        @JvmStatic
+        fun newBuilder() = Builder()
+    }
+
+    class Builder {
+        private var keyword = ""
+        private var pages = 0
+
+        fun addItems(item: AssemblySearchItem) = Unit
+
+        fun setKeyword(value: String) {
+            keyword = value
+        }
+
+        fun setPages(value: Int) {
+            pages = value
+        }
+
+        fun build() = EmptyResponse(keyword, pages)
+    }
+
+    fun getItemsCount() = 0
+}
+
+class EmptyResponseWithBuilderItems private constructor(
+    val keyword: String,
+    val pages: Int,
+) {
+    companion object {
+        @JvmStatic
+        fun newBuilder() = Builder()
+    }
+
+    class Builder {
+        private var keyword = ""
+        private var pages = 0
+
+        fun addItemsBuilder() = AssemblySearchItem.newBuilder()
+
+        fun setKeyword(value: String) {
+            keyword = value
+        }
+
+        fun setPages(value: Int) {
+            pages = value
+        }
+
+        fun build() = EmptyResponseWithBuilderItems(keyword, pages)
+    }
+
+    fun getItemsCount() = 0
+}
+
 class NoItemsResponse private constructor() {
     companion object {
         @JvmStatic
@@ -87,4 +145,25 @@ class BangumiSearchMossAssemblyTest {
     fun `rejects response without repeated item API`() {
         assertNull(NoItemsResponse.newBuilder().createSearchItemAssembly())
     }
+
+    @Test
+    fun `builds empty response for addItems message shape`() {
+        val response = requireNotNull(EmptyResponse.newBuilder().createEmptySearchResponse("query")) as EmptyResponse
+
+        assertEquals("query", response.keyword)
+        assertEquals(1, response.pages)
+        assertEquals(0, response.getItemsCount())
+    }
+
+    @Test
+    fun `builds empty response for addItemsBuilder shape`() {
+        val response = requireNotNull(
+            EmptyResponseWithBuilderItems.newBuilder().createEmptySearchResponse("query"),
+        ) as EmptyResponseWithBuilderItems
+
+        assertEquals("query", response.keyword)
+        assertEquals(1, response.pages)
+        assertEquals(0, response.getItemsCount())
+    }
+
 }

@@ -186,7 +186,15 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         methodSignature: String,
         responseType: Class<*>?,
     ): Boolean {
+        if (responseType == null) {
+            reportStatus("skipped type=${area.type} reason=response_type_unavailable")
+            return false
+        }
         val keyword = request.string("getKeyword")
+        if (!responseType.supportsEmptySearchResponse()) {
+            reportStatus("skipped type=${area.type} reason=empty_response_unavailable")
+            return false
+        }
         val pagination = request.callMethod("getPagination")
         val playerArgs = request.callMethod("getPlayerArgs")
         val page = pagination?.string("getNext").orEmpty().ifBlank { "1" }
@@ -200,41 +208,43 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
             fnval = playerArgs?.number("getFnval")?.toInt() ?: 16,
         )
         executor.execute {
-            runCatching {
-                val attempt = requestSearch(area, query)
-                val result = attempt.result
-                val response = result.body?.let { buildSearchResponse(it, keyword, page, responseType) }
-                if (response != null) {
-                    result.body?.let { recordSearchRegions(it, attempt.region) }
-                    mainHandler.post {
-                        runCatching {
-                            invokeCallback(callback, "onNext", response.response)
-                            invokeCallback(callback, "onCompleted")
-                            val status =
-                                "delivered type=${area.type} source=${attempt.region.name} " +
-                                    "json_items=${response.jsonItems} proto_items=${response.protoItems} " +
-                                    "item_mode=${response.itemMode}"
-                            reportStatus(status)
-                            log("BangumiSearchMoss $status method=$methodSignature")
-                        }.onFailure { error ->
-                            reportStatus("callback failed type=${area.type} ${error.javaClass.simpleName}")
-                            log("BangumiSearchMoss callback failed type=${area.type} method=$methodSignature", error)
-                        }
-                    }
-                } else {
-                    throw IllegalStateException("parser response was empty or incompatible")
+            var attempt: SearchAttempt? = null
+            val response = runCatching {
+                attempt = requestSearch(area, query)
+                val result = attempt!!.result
+                result.body?.let { buildSearchResponse(it, keyword, page, responseType) }
+                    ?: null
+            }.getOrNull() ?: buildEmptySearchResponse(responseType, keyword)
+            if (response == null) {
+                log("BangumiSearchMoss empty response unavailable type=${area.type} method=$methodSignature")
+                return@execute
+            }
+            val result = attempt?.result
+            val source = attempt?.region?.name ?: area.region.name
+            if (response.itemMode != "empty" && result?.body != null) {
+                recordSearchRegions(result.body, attempt!!.region)
+            }
+            mainHandler.post {
+                runCatching {
+                    invokeCallback(callback, "onNext", response.response)
+                    invokeCallback(callback, "onCompleted")
+                    val status =
+                        "delivered type=${area.type} source=$source " +
+                            "json_items=${response.jsonItems} proto_items=${response.protoItems} " +
+                            "item_mode=${response.itemMode}"
+                    reportStatus(status)
+                    log("BangumiSearchMoss $status method=$methodSignature")
+                }.onFailure { error ->
+                    reportStatus("callback failed type=${area.type} ${error.javaClass.simpleName}")
+                    log("BangumiSearchMoss callback failed type=${area.type} method=$methodSignature", error)
                 }
+            }
+            result?.let {
                 val status =
-                    "response type=${area.type} source=${attempt.region.name} status=${result.httpStatus ?: "transport"} " +
-                        "bytes=${result.byteSize ?: 0} json=${result.isJson} error=${result.error ?: "none"}"
+                    "response type=${area.type} source=$source status=${it.httpStatus ?: "transport"} " +
+                        "bytes=${it.byteSize ?: 0} json=${it.isJson} error=${it.error ?: "none"}"
                 reportStatus(status)
                 log("BangumiSearchMoss $status")
-            }.onFailure { error ->
-                mainHandler.post {
-                    runCatching { invokeCallback(callback, "onError", IllegalStateException("Regional search failed", error)) }
-                    reportStatus("failed type=${area.type} ${error.javaClass.simpleName}")
-                    log("BangumiSearchMoss search failed type=${area.type} method=$methodSignature", error)
-                }
             }
         }
         val status = "intercepted type=${area.type} region=${area.region.name} keyword_length=${keyword.length}"
@@ -260,15 +270,6 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         }
         return lastAttempt ?: SearchAttempt(area.region, BangumiParserClient.Result(null, error = "server not configured"))
     }
-
-    private fun hasSearchItems(raw: String?): Boolean = runCatching {
-        JSONObject(raw ?: return@runCatching false)
-            .optJSONObject("data")
-            ?.optJSONArray("items")
-            ?.length()
-            ?.let { it > 0 }
-            ?: false
-    }.getOrDefault(false)
 
     private fun findSearchInvocation(args: Iterable<Any?>): SearchInvocation? {
         val request = args.filterNotNull().firstOrNull { it.isSearchRequest() } ?: return null
@@ -388,9 +389,7 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         if (root.optInt("code") != 0) return@runCatching null
         val data = root.optJSONObject("data") ?: return@runCatching null
         val items = data.optJSONArray("items") ?: return@runCatching null
-        // An upstream success with zero matches is a valid empty page, not a
-        // failure: deliver it so the tab shows its empty state instead of an
-        // error retry loop.
+        if (items.length() == 0) return@runCatching null
         val response = responseType.staticCall("newBuilder") ?: return@runCatching null
         response.invokeBuilder("setKeyword", keyword)
         response.invokeBuilder("setPages", data.optInt("pages", 1))
@@ -448,6 +447,12 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         check(builtItems == items.length()) { "Built search response lost items: json=${items.length()} proto=$builtItems" }
         SearchResponse(built, items.length(), builtItems, itemAssembly.mode)
     }.onFailure { log("BangumiSearchMoss response build failed", it) }.getOrNull()
+
+    private fun buildEmptySearchResponse(responseType: Class<*>, keyword: String): SearchResponse? = runCatching {
+        val builder = responseType.staticCall("newBuilder") ?: return@runCatching null
+        val built = builder.createEmptySearchResponse(keyword) ?: return@runCatching null
+        SearchResponse(built, 0, 0, "empty")
+    }.onFailure { log("BangumiSearchMoss empty response build failed", it) }.getOrNull()
 
     private fun recordSearchRegions(raw: String, region: BangumiRegion) = runCatching {
         val root = JSONObject(raw)
@@ -721,9 +726,34 @@ internal fun Any.createSearchItemAssembly(): SearchItemAssembly? {
     )
 }
 
+internal fun Any.createEmptySearchResponse(keyword: String): Any? {
+    callMethod("setKeyword", keyword)
+    callMethod("setPages", 1)
+    val built = callMethod("build") ?: return null
+    val itemCount = (built.callMethod("getItemsCount") as? Number)?.toInt() ?: return null
+    return built.takeIf { itemCount == 0 }
+}
+
+internal fun hasSearchItems(raw: String?): Boolean = runCatching {
+    val root = JSONObject(raw ?: return@runCatching false)
+    if (root.optInt("code") != 0) return@runCatching false
+    val items = root.optJSONObject("data")?.optJSONArray("items") ?: return@runCatching false
+    items.length() > 0
+}.getOrDefault(false)
+
 private fun Class<*>.staticCallNoArgs(name: String): Any? = methods.asSequence()
     .firstOrNull { Modifier.isStatic(it.modifiers) && it.name == name && it.parameterCount == 0 }
     ?.let { runCatching { it.invoke(null) }.getOrNull() }
+
+private fun Class<*>.supportsEmptySearchResponse(): Boolean {
+    val builderType = methods.firstOrNull {
+        Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0
+    }?.returnType ?: return false
+    val buildMethod = builderType.methods.firstOrNull { it.name == "build" && it.parameterCount == 0 } ?: return false
+    return builderType.methods.any { it.name == "setKeyword" && it.parameterCount == 1 } &&
+        builderType.methods.any { it.name == "setPages" && it.parameterCount == 1 } &&
+        buildMethod.returnType.methods.any { it.name == "getItemsCount" && it.parameterCount == 0 }
+}
 
 private fun JSONArray?.forEachObject(action: (JSONObject) -> Unit) {
     if (this == null) return
