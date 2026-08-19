@@ -388,15 +388,17 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         if (root.optInt("code") != 0) return@runCatching null
         val data = root.optJSONObject("data") ?: return@runCatching null
         val items = data.optJSONArray("items") ?: return@runCatching null
-        if (items.length() == 0) return@runCatching null
+        // An upstream success with zero matches is a valid empty page, not a
+        // failure: deliver it so the tab shows its empty state instead of an
+        // error retry loop.
         val response = responseType.staticCall("newBuilder") ?: return@runCatching null
         response.invokeBuilder("setKeyword", keyword)
         response.invokeBuilder("setPages", data.optInt("pages", 1))
         val currentPage = page.toIntOrNull() ?: 1
         val totalPages = data.optInt("pages", 1)
         if (currentPage < totalPages) {
-            response.callMethod("getPaginationBuilder")?.apply {
-                invokeBuilder("setNext", (currentPage + 1).toString())
+            response.withNestedBuilder("getPaginationBuilder", "setPagination") {
+                it.invokeBuilder("setNext", (currentPage + 1).toString())
             }
         }
         val itemAssembly = response.createSearchItemAssembly()
@@ -404,17 +406,35 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                 "SearchItem builder unavailable response=${responseType.name} " +
                     "methods=${response.javaClass.methods.filter { it.name.contains("Items") }.joinToString { it.signature() }}",
             )
+        var cardAccess: CardAccess? = null
+        var cardAccessResolved = false
         items.forEachObject { item ->
             val searchItem = itemAssembly.newBuilder()
             searchItem.copyFields(item, SEARCH_ITEM_FIELDS)
-            val card = searchItem.callMethod("getBangumiBuilder")
-                ?: throw IllegalStateException("Bangumi card builder unavailable")
-            card.copyFields(item, BANGUMI_FIELDS)
-            card.copyEpisodes(item.optJSONArray("episodes"), "addEpisodesBuilder", EPISODE_FIELDS)
-            card.copyEpisodes(item.optJSONArray("episodes_new"), "addEpisodesNewBuilder", EPISODE_NEW_FIELDS)
-            item.optJSONObject("watch_button")?.let { button ->
-                card.callMethod("getWatchButtonBuilder")?.copyFields(button, WATCH_BUTTON_FIELDS)
+            if (!cardAccessResolved) {
+                cardAccess = searchItem.resolveBangumiCardAccess()
+                cardAccessResolved = true
             }
+            val access = cardAccess
+                ?: throw IllegalStateException(
+                    "Bangumi card builder unavailable: ${searchItem.cardAccessDiagnostics()}"
+                )
+            val card = if (access.viaGetter) {
+                runCatching { access.method.invoke(searchItem) }.getOrNull()
+                    ?: throw IllegalStateException("Bangumi card builder invoke failed: ${access.method.name}")
+            } else {
+                access.method.parameterTypes[0].staticCallNoArgs("newBuilder")
+                    ?: throw IllegalStateException("Bangumi card newBuilder failed: ${access.method.name}")
+            }
+            card.copyFields(item, BANGUMI_FIELDS)
+            card.copyEpisodes(item.optJSONArray("episodes"), "addEpisodesBuilder", "addEpisodes", EPISODE_FIELDS)
+            card.copyEpisodes(item.optJSONArray("episodes_new"), "addEpisodesNewBuilder", "addEpisodesNew", EPISODE_NEW_FIELDS)
+            item.optJSONObject("watch_button")?.let { button ->
+                card.withNestedBuilder("getWatchButtonBuilder", "setWatchButton") {
+                    it.copyFields(button, WATCH_BUTTON_FIELDS)
+                }
+            }
+            if (!access.viaGetter) searchItem.invokeBuilder(access.method.name, card)
             if (!itemAssembly.commit(searchItem)) {
                 throw IllegalStateException("SearchItem append failed mode=${itemAssembly.mode}")
             }
@@ -468,8 +488,91 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         visit(root)
     }.onFailure { log("BangumiSearchMoss region indexing failed", it) }
 
-    private fun Any.copyEpisodes(items: JSONArray?, builderMethod: String, fields: List<FieldSpec>) {
-        items.forEachObject { item -> callMethod(builderMethod)?.copyFields(item, fields) }
+    private fun Any.copyEpisodes(
+        items: JSONArray?,
+        builderMethod: String,
+        addMethod: String,
+        fields: List<FieldSpec>,
+    ) {
+        if (items == null || items.length() == 0) return
+        if (javaClass.allMethods().any { it.name == builderMethod && it.parameterCount == 0 }) {
+            items.forEachObject { item -> callMethod(builderMethod)?.copyFields(item, fields) }
+            return
+        }
+        // protobuf-javalite generates no get/add*Builder helpers. Repeated
+        // messages are attached through addX(E.Builder) overloads instead.
+        val adder = javaClass.allMethods().firstOrNull {
+            it.name == addMethod && it.parameterCount == 1 && !it.parameterTypes[0].isPrimitive &&
+                it.parameterTypes[0].methods.any { m ->
+                    Modifier.isStatic(m.modifiers) && m.name == "newBuilder" && m.parameterCount == 0
+                }
+        } ?: return
+        items.forEachObject { item ->
+            val builder = adder.parameterTypes[0].staticCallNoArgs("newBuilder") ?: return@forEachObject
+            builder.copyFields(item, fields)
+            invokeBuilder(addMethod, builder)
+        }
+    }
+
+    /**
+     * Fills a nested message field on a protobuf builder. Full-protobuf
+     * runtimes expose getXxxBuilder() which mutates in place; javalite only
+     * has setXxx(Message.Builder) overloads, so a fresh builder is attached.
+     */
+    private fun Any.withNestedBuilder(getterName: String, setterName: String, fill: (Any) -> Unit) {
+        callMethod(getterName)?.let { fill(it); return }
+        val setter = javaClass.allMethods().firstOrNull {
+            it.name == setterName && it.parameterCount == 1 && !it.parameterTypes[0].isPrimitive &&
+                it.parameterTypes[0].methods.any { m ->
+                    Modifier.isStatic(m.modifiers) && m.name == "newBuilder" && m.parameterCount == 0
+                }
+        } ?: return
+        val builder = setter.parameterTypes[0].staticCallNoArgs("newBuilder") ?: return
+        fill(builder)
+        invokeBuilder(setterName, builder)
+    }
+
+    private class CardAccess(val method: java.lang.reflect.Method, val viaGetter: Boolean)
+
+    /**
+     * Locates the bangumi card on a SearchItem builder. Newer host versions
+     * renamed the oneof card field, and current builds ship protobuf-javalite
+     * which has no getXxxBuilder() helpers at all, so three shapes are tried:
+     * the historical getter, any renamed getter with bangumi setters, and any
+     * message setter whose type builds into a bangumi card.
+     */
+    private fun Any.resolveBangumiCardAccess(): CardAccess? {
+        javaClass.allMethods()
+            .firstOrNull { it.name == "getBangumiBuilder" && it.parameterCount == 0 }
+            ?.let { return CardAccess(it, viaGetter = true) }
+        javaClass.allMethods()
+            .firstOrNull {
+                it.parameterCount == 0 && it.name.startsWith("get") && it.name.endsWith("Builder") &&
+                    it.returnType.hasBangumiCardSetters()
+            }
+            ?.let { return CardAccess(it, viaGetter = true) }
+        return javaClass.allMethods()
+            .firstOrNull {
+                it.parameterCount == 1 && it.name.startsWith("set") && !it.parameterTypes[0].isPrimitive &&
+                    runCatching { it.parameterTypes[0].getMethod("newBuilder").returnType }
+                        .getOrNull()?.hasBangumiCardSetters() == true
+            }
+            ?.let { CardAccess(it, viaGetter = false) }
+    }
+
+    private fun Class<*>.hasBangumiCardSetters(): Boolean {
+        val names = allMethods().filter { it.parameterCount == 1 }.map { it.name }.toSet()
+        return "setSeasonId" in names && "setSeasonTypeName" in names
+    }
+
+    private fun Any.cardAccessDiagnostics(): String {
+        val getters = javaClass.allMethods()
+            .filter { it.parameterCount == 0 && it.name.startsWith("get") }
+            .map { "${it.name}:${it.returnType.simpleName}" }.toList()
+        val setters = javaClass.allMethods()
+            .filter { it.parameterCount == 1 && it.name.startsWith("set") }
+            .map { "${it.name}(${it.parameterTypes[0].simpleName})" }.toList()
+        return "getters=$getters setters=$setters"
     }
 
     private fun Any.copyFields(json: JSONObject, fields: List<FieldSpec>) {
