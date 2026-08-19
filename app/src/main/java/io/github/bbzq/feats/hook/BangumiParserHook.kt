@@ -107,7 +107,7 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     private fun selectSearchRoute(query: Map<String, String>): Route? = when (query["type"]) {
-        AREA_HK_TW_SEARCH_TYPE -> orderedRegions(BangumiRegion.HK).firstNotNullOfOrNull(::routeFor)
+        AREA_HK_TW_SEARCH_TYPE -> orderedSearchRegions().firstNotNullOfOrNull(::routeFor)
         AREA_INTL_SEARCH_TYPE -> routeFor(BangumiRegion.INTL)
         else -> null
     }?.copy(kind = RouteKind.SEARCH)
@@ -130,8 +130,8 @@ class BangumiParserHook(env: RoamingEnv) : BaseRoamingHook(env) {
             ?.let(::routeFor)
             ?.copy(kind = RouteKind.SUBTITLE)
 
-    private fun orderedRegions(preferred: BangumiRegion?): List<BangumiRegion> =
-        (listOfNotNull(preferred) + listOf(BangumiRegion.HK, BangumiRegion.TW, BangumiRegion.INTL, BangumiRegion.CN)).distinct()
+    private fun orderedSearchRegions(): List<BangumiRegion> =
+        listOf(BangumiRegion.TW, BangumiRegion.HK)
 
     /**
      * A normal detail-page request has no region marker. Pick the first
