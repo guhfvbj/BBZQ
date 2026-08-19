@@ -2,6 +2,7 @@ package io.github.bbzq.feats.hook
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import io.github.bbzq.AccessKeyRepository
 import io.github.bbzq.BangumiRegion
 import io.github.bbzq.BangumiServerCredential
@@ -20,14 +21,22 @@ import io.github.bbzq.feats.bangumi.BangumiRegionContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.lang.reflect.Modifier
+import java.lang.reflect.ParameterizedType
 import java.lang.reflect.Proxy
+import java.lang.reflect.Type
+import java.lang.reflect.WildcardType
 import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Adds regional search categories and serves their results through BBZQ. */
 class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook(env) {
     private val executor = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "bbzq-bangumi-search").apply { isDaemon = true }
+    }
+    private val timeoutExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "bbzq-bangumi-search-timeout").apply { isDaemon = true }
     }
     private val mainHandler = Handler(Looper.getMainLooper())
     private val installedFragmentClasses = Collections.synchronizedSet(mutableSetOf<String>())
@@ -86,7 +95,7 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                         callback = invocation.callback,
                         area = area,
                         methodSignature = method.signature(),
-                        responseType = responseTypeFor(method),
+                        responseType = responseTypeFor(invocation.callback, method),
                     )
                     if (replacement) param.result = null
                 }
@@ -184,17 +193,9 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         callback: Any,
         area: BangumiSearchMossModel.AreaSearch,
         methodSignature: String,
-        responseType: Class<*>?,
+        responseType: SearchResponseTypeResolution,
     ): Boolean {
-        if (responseType == null) {
-            reportStatus("skipped type=${area.type} reason=response_type_unavailable")
-            return false
-        }
         val keyword = request.string("getKeyword")
-        if (!responseType.supportsEmptySearchResponse()) {
-            reportStatus("skipped type=${area.type} reason=empty_response_unavailable")
-            return false
-        }
         val pagination = request.callMethod("getPagination")
         val playerArgs = request.callMethod("getPlayerArgs")
         val page = pagination?.string("getNext").orEmpty().ifBlank { "1" }
@@ -207,37 +208,71 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
             fnver = playerArgs?.number("getFnver")?.toInt() ?: 0,
             fnval = playerArgs?.number("getFnval")?.toInt() ?: 16,
         )
+        val startedAt = SystemClock.elapsedRealtime()
+        val delivery = SearchDeliveryGate()
+        val resolvedType = responseType.type
+        if (resolvedType == null) {
+            finishSearch(
+                delivery = delivery,
+                callback = callback,
+                response = null,
+                area = area,
+                source = area.region.name,
+                reason = "response_type_unavailable",
+                methodSignature = methodSignature,
+                startedAt = startedAt,
+            )
+            val status =
+                "intercepted type=${area.type} region=${area.region.name} response_type=unavailable " +
+                    "type_source=${responseType.source} keyword_length=${keyword.length}"
+            reportStatus(status)
+            log("BangumiSearchMoss $status method=$methodSignature")
+            return true
+        }
+        val timeout = timeoutExecutor.schedule({
+            val empty = buildEmptySearchResponse(resolvedType, keyword)
+            finishSearch(
+                delivery = delivery,
+                callback = callback,
+                response = empty,
+                area = area,
+                source = area.region.name,
+                reason = "timeout",
+                methodSignature = methodSignature,
+                startedAt = startedAt,
+            )
+        }, SEARCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         executor.execute {
             var attempt: SearchAttempt? = null
+            var failure: Throwable? = null
             val response = runCatching {
                 attempt = requestSearch(area, query)
                 val result = attempt!!.result
-                result.body?.let { buildSearchResponse(it, keyword, page, responseType) }
+                result.body?.let { buildSearchResponse(it, keyword, page, resolvedType) }
                     ?: null
-            }.getOrNull() ?: buildEmptySearchResponse(responseType, keyword)
-            if (response == null) {
-                log("BangumiSearchMoss empty response unavailable type=${area.type} method=$methodSignature")
-                return@execute
-            }
+            }.onFailure { failure = it }.getOrNull()
+            val deliveredResponse = response ?: buildEmptySearchResponse(resolvedType, keyword)
             val result = attempt?.result
             val source = attempt?.region?.name ?: area.region.name
-            if (response.itemMode != "empty" && result?.body != null) {
-                recordSearchRegions(result.body, attempt!!.region)
+            val reason = when {
+                response != null -> "success"
+                failure != null -> "exception_${failure!!.javaClass.simpleName}"
+                result?.body == null -> result?.error ?: "empty_body"
+                else -> "empty_or_incompatible"
             }
-            mainHandler.post {
-                runCatching {
-                    invokeCallback(callback, "onNext", response.response)
-                    invokeCallback(callback, "onCompleted")
-                    val status =
-                        "delivered type=${area.type} source=$source " +
-                            "json_items=${response.jsonItems} proto_items=${response.protoItems} " +
-                            "item_mode=${response.itemMode}"
-                    reportStatus(status)
-                    log("BangumiSearchMoss $status method=$methodSignature")
-                }.onFailure { error ->
-                    reportStatus("callback failed type=${area.type} ${error.javaClass.simpleName}")
-                    log("BangumiSearchMoss callback failed type=${area.type} method=$methodSignature", error)
-                }
+            val accepted = finishSearch(
+                delivery = delivery,
+                callback = callback,
+                response = deliveredResponse,
+                area = area,
+                source = source,
+                reason = reason,
+                methodSignature = methodSignature,
+                startedAt = startedAt,
+            )
+            if (accepted) timeout.cancel(false)
+            if (accepted && response?.itemMode != "empty" && result?.body != null) {
+                recordSearchRegions(result.body, attempt!!.region)
             }
             result?.let {
                 val status =
@@ -247,9 +282,44 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                 log("BangumiSearchMoss $status")
             }
         }
-        val status = "intercepted type=${area.type} region=${area.region.name} keyword_length=${keyword.length}"
+        val status =
+            "intercepted type=${area.type} region=${area.region.name} response_type=${resolvedType.name} " +
+                "type_source=${responseType.source} keyword_length=${keyword.length}"
         reportStatus(status)
         log("BangumiSearchMoss $status method=$methodSignature")
+        return true
+    }
+
+    private fun finishSearch(
+        delivery: SearchDeliveryGate,
+        callback: Any,
+        response: SearchResponse?,
+        area: BangumiSearchMossModel.AreaSearch,
+        source: String,
+        reason: String,
+        methodSignature: String,
+        startedAt: Long,
+    ): Boolean {
+        if (!delivery.tryFinish()) return false
+        val elapsed = SystemClock.elapsedRealtime() - startedAt
+        mainHandler.post {
+            runCatching {
+                deliverSearchCallback(
+                    response = response?.response,
+                    onNext = { invokeCallback(callback, "onNext", it) },
+                    onCompleted = { invokeCallback(callback, "onCompleted") },
+                )
+                val status =
+                    "delivered type=${area.type} source=$source reason=$reason elapsed_ms=$elapsed " +
+                        "json_items=${response?.jsonItems ?: 0} proto_items=${response?.protoItems ?: 0} " +
+                        "item_mode=${response?.itemMode ?: "complete_only"}"
+                reportStatus(status)
+                log("BangumiSearchMoss $status method=$methodSignature")
+            }.onFailure { error ->
+                reportStatus("callback failed type=${area.type} reason=$reason ${error.javaClass.simpleName}")
+                log("BangumiSearchMoss callback failed type=${area.type} method=$methodSignature", error)
+            }
+        }
         return true
     }
 
@@ -352,10 +422,22 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         }
     }
 
-    private fun responseTypeFor(method: java.lang.reflect.Method): Class<*>? {
+    private fun responseTypeFor(callback: Any, method: java.lang.reflect.Method): SearchResponseTypeResolution {
+        callback.searchCallbackResponseType()?.let {
+            return SearchResponseTypeResolution(it, "callback")
+        }
+        method.genericParameterTypes.asSequence()
+            .flatMap { it.concreteTypes() }
+            .firstOrNull { it.isSearchResponseCandidate() }
+            ?.let { return SearchResponseTypeResolution(it, "method_generic") }
         val responseClassName = method.declaringClass.name.replace("SearchMoss", "SearchByTypeResponse")
-        return classLoader.findClassOrNull(responseClassName)
-            ?: SEARCH_BY_TYPE_RESPONSE_CLASSES.asSequence().mapNotNull(classLoader::findClassOrNull).firstOrNull()
+        classLoader.findClassOrNull(responseClassName)?.let {
+            return SearchResponseTypeResolution(it, "declaring_package")
+        }
+        SEARCH_BY_TYPE_RESPONSE_CLASSES.asSequence().mapNotNull(classLoader::findClassOrNull).firstOrNull()?.let {
+            return SearchResponseTypeResolution(it, "known_class")
+        }
+        return SearchResponseTypeResolution(null, "none")
     }
 
     private fun invokeCallback(callback: Any, name: String, vararg args: Any?) {
@@ -674,6 +756,8 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         )
         private val WATCH_BUTTON_FIELDS = listOf(string("title", "setTitle"), string("link", "setLink"))
 
+        private const val SEARCH_TIMEOUT_MS = 8_000L
+
         val SEARCH_MOSS_CLASSES = listOf(
             "com.bapis.bilibili.polymer.app.search.v1.SearchMoss",
             "com.bapis.bilibili.p4218polymer.app.search.v1.SearchMoss",
@@ -694,6 +778,61 @@ internal class SearchItemAssembly(
 ) {
     fun newBuilder(): Any = create()
     fun commit(builder: Any): Boolean = append(builder)
+}
+
+internal data class SearchResponseTypeResolution(
+    val type: Class<*>?,
+    val source: String,
+)
+
+internal class SearchDeliveryGate {
+    private val finished = AtomicBoolean(false)
+
+    fun tryFinish(): Boolean = finished.compareAndSet(false, true)
+}
+
+internal fun deliverSearchCallback(
+    response: Any?,
+    onNext: (Any) -> Unit,
+    onCompleted: () -> Unit,
+) {
+    try {
+        response?.let(onNext)
+    } finally {
+        onCompleted()
+    }
+}
+
+internal fun Any.searchCallbackResponseType(): Class<*>? {
+    val direct = javaClass.allMethods()
+        .asSequence()
+        .filter { it.name == "onNext" && it.parameterCount == 1 }
+        .map { it.parameterTypes[0] }
+        .firstOrNull { it.isSearchResponseCandidate() }
+    if (direct != null) return direct
+    return (sequenceOf(javaClass.genericSuperclass) + javaClass.genericInterfaces.asSequence())
+        .flatMap { it.concreteTypes() }
+        .firstOrNull { it.isSearchResponseCandidate() }
+}
+
+private fun Type.concreteTypes(): Sequence<Class<*>> = sequence {
+    when (this@concreteTypes) {
+        is Class<*> -> {
+            yield(this@concreteTypes)
+            this@concreteTypes.genericSuperclass?.let { yieldAll(it.concreteTypes()) }
+            this@concreteTypes.genericInterfaces.forEach { yieldAll(it.concreteTypes()) }
+        }
+        is ParameterizedType -> {
+            yieldAll(rawType.concreteTypes())
+            actualTypeArguments.forEach { yieldAll(it.concreteTypes()) }
+        }
+        is WildcardType -> upperBounds.forEach { yieldAll(it.concreteTypes()) }
+    }
+}
+
+private fun Class<*>.isSearchResponseCandidate(): Boolean {
+    if (this == Any::class.java || isPrimitive || isInterface) return false
+    return methods.any { Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0 }
 }
 
 internal fun Any.createSearchItemAssembly(): SearchItemAssembly? {
@@ -730,8 +869,8 @@ internal fun Any.createEmptySearchResponse(keyword: String): Any? {
     callMethod("setKeyword", keyword)
     callMethod("setPages", 1)
     val built = callMethod("build") ?: return null
-    val itemCount = (built.callMethod("getItemsCount") as? Number)?.toInt() ?: return null
-    return built.takeIf { itemCount == 0 }
+    val itemCount = (built.callMethod("getItemsCount") as? Number)?.toInt()
+    return built.takeIf { itemCount == null || itemCount == 0 }
 }
 
 internal fun hasSearchItems(raw: String?): Boolean = runCatching {
@@ -744,16 +883,6 @@ internal fun hasSearchItems(raw: String?): Boolean = runCatching {
 private fun Class<*>.staticCallNoArgs(name: String): Any? = methods.asSequence()
     .firstOrNull { Modifier.isStatic(it.modifiers) && it.name == name && it.parameterCount == 0 }
     ?.let { runCatching { it.invoke(null) }.getOrNull() }
-
-private fun Class<*>.supportsEmptySearchResponse(): Boolean {
-    val builderType = methods.firstOrNull {
-        Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0
-    }?.returnType ?: return false
-    val buildMethod = builderType.methods.firstOrNull { it.name == "build" && it.parameterCount == 0 } ?: return false
-    return builderType.methods.any { it.name == "setKeyword" && it.parameterCount == 1 } &&
-        builderType.methods.any { it.name == "setPages" && it.parameterCount == 1 } &&
-        buildMethod.returnType.methods.any { it.name == "getItemsCount" && it.parameterCount == 0 }
-}
 
 private fun JSONArray?.forEachObject(action: (JSONObject) -> Unit) {
     if (this == null) return

@@ -5,6 +5,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 
 class AssemblySearchItem private constructor() {
     companion object {
@@ -120,6 +122,16 @@ class NoItemsResponse private constructor() {
     }
 }
 
+interface TypedSearchCallback<T> {
+    fun onNext(value: T)
+    fun onCompleted()
+}
+
+class EmptyResponseCallback : TypedSearchCallback<EmptyResponse> {
+    override fun onNext(value: EmptyResponse) = Unit
+    override fun onCompleted() = Unit
+}
+
 class BangumiSearchMossAssemblyTest {
     @Test
     fun `assembles repeated item through addItems message method`() {
@@ -164,6 +176,36 @@ class BangumiSearchMossAssemblyTest {
         assertEquals("query", response.keyword)
         assertEquals(1, response.pages)
         assertEquals(0, response.getItemsCount())
+    }
+
+    @Test
+    fun `resolves response type from generic callback`() {
+        assertEquals(EmptyResponse::class.java, EmptyResponseCallback().searchCallbackResponseType())
+    }
+
+    @Test
+    fun `delivery gate allows only one concurrent finisher`() {
+        val gate = SearchDeliveryGate()
+        val executor = Executors.newFixedThreadPool(8)
+        try {
+            val results = (1..32).map {
+                executor.submit(Callable { gate.tryFinish() })
+            }.map { it.get() }
+            assertEquals(1, results.count { it })
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `completion-only fallback does not call onNext`() {
+        val events = mutableListOf<String>()
+        deliverSearchCallback(
+            response = null,
+            onNext = { events += "next" },
+            onCompleted = { events += "completed" },
+        )
+        assertEquals(listOf("completed"), events)
     }
 
 }
