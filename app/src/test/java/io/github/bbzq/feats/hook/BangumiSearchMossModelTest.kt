@@ -16,6 +16,13 @@ class BangumiSearchMossModelTest {
     }
 
     @Test
+    fun `prefers Taiwan then falls back to Hong Kong for the combined category`() {
+        val area = requireNotNull(BangumiSearchMossModel.areaSearch("1919"))
+
+        assertEquals(listOf(BangumiRegion.TW, BangumiRegion.HK), BangumiSearchMossModel.searchRegions(area))
+    }
+
+    @Test
     fun `builds paginated parser query`() {
         assertEquals(
             mapOf(

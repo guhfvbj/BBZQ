@@ -95,24 +95,31 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
     }
 
     private fun requestSearch(area: BangumiSearchMossModel.AreaSearch, query: Map<String, String>): SearchAttempt {
-        val host = when {
-            area.region == BangumiRegion.HK -> ModuleSettings.getBangumiServerHost(prefs, BangumiRegion.HK)
-                ?: ModuleSettings.getBangumiServerHost(prefs, BangumiRegion.TW)
-            else -> ModuleSettings.getBangumiServerHost(prefs, area.region)
-        } ?: return SearchAttempt(area.region, BangumiParserClient.Result(null, error = "server not configured"))
-        val region = if (area.region == BangumiRegion.HK && ModuleSettings.getBangumiServerHost(prefs, BangumiRegion.HK) == null) {
-            BangumiRegion.TW
-        } else area.region
-        val credential = parserCredential(region)
-        return SearchAttempt(region, BangumiParserClient.requestSearch(
-            region = region,
-            host = host,
-            query = query + ("type" to area.upstreamType),
-            credential = credential,
-            classLoader = classLoader,
-            useHttps = ModuleSettings.isBangumiServerHttps(prefs, region),
-        ))
+        var lastAttempt: SearchAttempt? = null
+        for (region in BangumiSearchMossModel.searchRegions(area)) {
+            val host = ModuleSettings.getBangumiServerHost(prefs, region) ?: continue
+            val attempt = SearchAttempt(region, BangumiParserClient.requestSearch(
+                region = region,
+                host = host,
+                query = query + ("type" to area.upstreamType),
+                credential = parserCredential(region),
+                classLoader = classLoader,
+                useHttps = ModuleSettings.isBangumiServerHttps(prefs, region),
+            ))
+            if (attempt.result.isSuccess && hasSearchItems(attempt.result.body)) return attempt
+            lastAttempt = attempt
+        }
+        return lastAttempt ?: SearchAttempt(area.region, BangumiParserClient.Result(null, error = "server not configured"))
     }
+
+    private fun hasSearchItems(raw: String?): Boolean = runCatching {
+        JSONObject(raw ?: return@runCatching false)
+            .optJSONObject("data")
+            ?.optJSONArray("items")
+            ?.length()
+            ?.let { it > 0 }
+            ?: false
+    }.getOrDefault(false)
 
     private fun parserCredential(region: BangumiRegion): BangumiServerCredential? =
         ModuleSettings.getBangumiServerCredential(prefs, region)

@@ -19,6 +19,11 @@ internal object BangumiSearchMossModel {
         else -> null
     }
 
+    /** Taiwan is the preferred source for the combined HK/TW search category. */
+    fun searchRegions(area: AreaSearch): List<BangumiRegion> =
+        if (area.region == BangumiRegion.HK) listOf(BangumiRegion.TW, BangumiRegion.HK)
+        else listOf(area.region)
+
     fun query(
         keyword: String,
         page: String,
