@@ -212,7 +212,8 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                             invokeCallback(callback, "onCompleted")
                             val status =
                                 "delivered type=${area.type} source=${attempt.region.name} " +
-                                    "json_items=${response.jsonItems} proto_items=${response.protoItems}"
+                                    "json_items=${response.jsonItems} proto_items=${response.protoItems} " +
+                                    "item_mode=${response.itemMode}"
                             reportStatus(status)
                             log("BangumiSearchMoss $status method=$methodSignature")
                         }.onFailure { error ->
@@ -398,9 +399,13 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                 invokeBuilder("setNext", (currentPage + 1).toString())
             }
         }
+        val itemAssembly = response.createSearchItemAssembly()
+            ?: throw IllegalStateException(
+                "SearchItem builder unavailable response=${responseType.name} " +
+                    "methods=${response.javaClass.methods.filter { it.name.contains("Items") }.joinToString { it.signature() }}",
+            )
         items.forEachObject { item ->
-            val searchItem = response.callMethod("addItemsBuilder")
-                ?: throw IllegalStateException("SearchItem builder unavailable")
+            val searchItem = itemAssembly.newBuilder()
             searchItem.copyFields(item, SEARCH_ITEM_FIELDS)
             val card = searchItem.callMethod("getBangumiBuilder")
                 ?: throw IllegalStateException("Bangumi card builder unavailable")
@@ -410,6 +415,9 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
             item.optJSONObject("watch_button")?.let { button ->
                 card.callMethod("getWatchButtonBuilder")?.copyFields(button, WATCH_BUTTON_FIELDS)
             }
+            if (!itemAssembly.commit(searchItem)) {
+                throw IllegalStateException("SearchItem append failed mode=${itemAssembly.mode}")
+            }
         }
         val protoItems = response.number("getItemsCount")?.toInt()
             ?: throw IllegalStateException("Search response item count unavailable")
@@ -418,7 +426,7 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         val builtItems = built.number("getItemsCount")?.toInt()
             ?: throw IllegalStateException("Built search response item count unavailable")
         check(builtItems == items.length()) { "Built search response lost items: json=${items.length()} proto=$builtItems" }
-        SearchResponse(built, items.length(), builtItems)
+        SearchResponse(built, items.length(), builtItems, itemAssembly.mode)
     }.onFailure { log("BangumiSearchMoss response build failed", it) }.getOrNull()
 
     private fun recordSearchRegions(raw: String, region: BangumiRegion) = runCatching {
@@ -518,7 +526,12 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
             val result: BangumiParserClient.Result,
         )
         private data class SearchInvocation(val request: Any, val callback: Any)
-        private data class SearchResponse(val response: Any, val jsonItems: Int, val protoItems: Int)
+        private data class SearchResponse(
+            val response: Any,
+            val jsonItems: Int,
+            val protoItems: Int,
+            val itemMode: String,
+        )
         private data class FieldSpec(val jsonKey: String, val setter: String, val read: (JSONObject) -> Any?) {
             fun value(json: JSONObject): Any? = read(json)
         }
@@ -565,6 +578,48 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         )
     }
 }
+
+internal class SearchItemAssembly(
+    private val create: () -> Any,
+    val mode: String,
+    private val append: (Any) -> Boolean = { true },
+) {
+    fun newBuilder(): Any = create()
+    fun commit(builder: Any): Boolean = append(builder)
+}
+
+internal fun Any.createSearchItemAssembly(): SearchItemAssembly? {
+    val responseBuilder = this
+    if (javaClass.methods.any { it.name == "addItemsBuilder" && it.parameterCount == 0 }) {
+        return SearchItemAssembly(
+            create = { responseBuilder.callMethod("addItemsBuilder")
+                ?: error("SearchItem builder unavailable") },
+            mode = "addItemsBuilder",
+        )
+    }
+    val addItems = javaClass.methods.firstOrNull {
+        it.name == "addItems" && it.parameterCount == 1 && !it.parameterTypes[0].isPrimitive
+    } ?: return null
+    val itemType = addItems.parameterTypes[0]
+    if (itemType.methods.none { Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0 }) {
+        return null
+    }
+    return SearchItemAssembly(
+        create = { itemType.staticCallNoArgs("newBuilder")
+            ?: error("SearchItem builder unavailable") },
+        mode = "addItems",
+        append = { itemBuilder ->
+            runCatching {
+                addItems.invoke(responseBuilder, itemBuilder.callMethod("build"))
+                true
+            }.getOrDefault(false)
+        },
+    )
+}
+
+private fun Class<*>.staticCallNoArgs(name: String): Any? = methods.asSequence()
+    .firstOrNull { Modifier.isStatic(it.modifiers) && it.name == name && it.parameterCount == 0 }
+    ?.let { runCatching { it.invoke(null) }.getOrNull() }
 
 private fun JSONArray?.forEachObject(action: (JSONObject) -> Unit) {
     if (this == null) return
