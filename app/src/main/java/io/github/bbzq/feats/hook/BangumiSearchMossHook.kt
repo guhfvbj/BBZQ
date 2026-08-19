@@ -155,7 +155,10 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                             it.type == Int::class.javaPrimitiveType || it.type == Int::class.javaObjectType
                         }?.forEach { field ->
                             runCatching {
-                                if ((field.get(param.thisObject) as? Number)?.toInt() in setOf(7, 8, 1919, 1920)) {
+                                // Only migrate the host's legacy values. Once changed, do not
+                                // rewrite the same fields on every visibility transition: that
+                                // can make FragmentManager repeatedly re-evaluate the page.
+                                if ((field.get(param.thisObject) as? Number)?.toInt() in setOf(7, 8)) {
                                     field.set(param.thisObject, targetType)
                                     changed++
                                 }
@@ -515,7 +518,9 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                     it.copyFields(button, WATCH_BUTTON_FIELDS)
                 }
             }
-            if (!access.viaGetter) searchItem.invokeBuilder(access.method.name, card)
+            if (!access.viaGetter && !searchItem.invokeMessageBuilder(access.method.name, card)) {
+                throw IllegalStateException("Bangumi card setter failed: ${access.method.name}")
+            }
             if (!itemAssembly.commit(searchItem)) {
                 throw IllegalStateException("SearchItem append failed mode=${itemAssembly.mode}")
             }
@@ -590,14 +595,12 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         // messages are attached through addX(E.Builder) overloads instead.
         val adder = javaClass.allMethods().firstOrNull {
             it.name == addMethod && it.parameterCount == 1 && !it.parameterTypes[0].isPrimitive &&
-                it.parameterTypes[0].methods.any { m ->
-                    Modifier.isStatic(m.modifiers) && m.name == "newBuilder" && m.parameterCount == 0
-                }
+                it.parameterTypes[0].messageTypeForBuilder() != null
         } ?: return
         items.forEachObject { item ->
-            val builder = adder.parameterTypes[0].staticCallNoArgs("newBuilder") ?: return@forEachObject
+            val builder = adder.parameterTypes[0].newMessageBuilder() ?: return@forEachObject
             builder.copyFields(item, fields)
-            invokeBuilder(addMethod, builder)
+            invokeMessageBuilder(addMethod, builder)
         }
     }
 
@@ -610,13 +613,11 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         callMethod(getterName)?.let { fill(it); return }
         val setter = javaClass.allMethods().firstOrNull {
             it.name == setterName && it.parameterCount == 1 && !it.parameterTypes[0].isPrimitive &&
-                it.parameterTypes[0].methods.any { m ->
-                    Modifier.isStatic(m.modifiers) && m.name == "newBuilder" && m.parameterCount == 0
-                }
+                it.parameterTypes[0].messageTypeForBuilder() != null
         } ?: return
-        val builder = setter.parameterTypes[0].staticCallNoArgs("newBuilder") ?: return
+        val builder = setter.parameterTypes[0].newMessageBuilder() ?: return
         fill(builder)
-        invokeBuilder(setterName, builder)
+        invokeMessageBuilder(setterName, builder)
     }
 
     private class CardAccess(val method: java.lang.reflect.Method, val viaGetter: Boolean)
@@ -641,8 +642,8 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         return javaClass.allMethods()
             .firstOrNull {
                 it.parameterCount == 1 && it.name.startsWith("set") && !it.parameterTypes[0].isPrimitive &&
-                    runCatching { it.parameterTypes[0].getMethod("newBuilder").returnType }
-                        .getOrNull()?.hasBangumiCardSetters() == true
+                    it.parameterTypes[0].hasBangumiCardSetters() &&
+                    it.parameterTypes[0].messageTypeForBuilder() != null
             }
             ?.let { CardAccess(it, viaGetter = false) }
     }
@@ -674,6 +675,26 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
             it.name == name && it.parameterCount == 1 && accepts(it.parameterTypes[0], value)
         } ?: return
         runCatching { method.invoke(this, value) }
+    }
+
+    private fun Any.invokeMessageBuilder(name: String, builder: Any): Boolean {
+        val builderMethod = javaClass.allMethods().firstOrNull {
+            it.name == name && it.parameterCount == 1 && accepts(it.parameterTypes[0], builder)
+        }
+        if (builderMethod != null) return runCatching {
+            builderMethod.isAccessible = true
+            builderMethod.invoke(this, builder)
+            true
+        }.getOrDefault(false)
+        val message = builder.callMethod("build") ?: return false
+        val messageMethod = javaClass.allMethods().firstOrNull {
+            it.name == name && it.parameterCount == 1 && accepts(it.parameterTypes[0], message)
+        } ?: return false
+        return runCatching {
+            messageMethod.isAccessible = true
+            messageMethod.invoke(this, message)
+            true
+        }.getOrDefault(false)
     }
 
     private fun Class<*>.staticCall(name: String): Any? = methods.firstOrNull {
@@ -844,23 +865,24 @@ internal fun Any.createSearchItemAssembly(): SearchItemAssembly? {
             mode = "addItemsBuilder",
         )
     }
-    val addItems = javaClass.methods.asSequence()
+    val addItemCandidates = javaClass.methods.asSequence()
         .filter { it.name == "addItems" && it.parameterCount == 1 && !it.parameterTypes[0].isPrimitive }
-        .firstOrNull { candidate ->
-            candidate.parameterTypes[0].methods.any {
-                Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0
-            }
-        } ?: return null
+        .filter { it.parameterTypes[0].messageTypeForBuilder() != null }
+        .toList()
+    val addItems = addItemCandidates.firstOrNull { candidate ->
+        candidate.parameterTypes[0].methods.any {
+            Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0
+        }
+    } ?: addItemCandidates.firstOrNull() ?: return null
     val itemType = addItems.parameterTypes[0]
     return SearchItemAssembly(
-        create = { itemType.staticCallNoArgs("newBuilder")
+        create = { itemType.newMessageBuilder()
             ?: error("SearchItem builder unavailable") },
         mode = "addItems(${itemType.simpleName})",
         append = { itemBuilder ->
-            runCatching {
-                addItems.invoke(responseBuilder, itemBuilder.callMethod("build"))
-                true
-            }.getOrDefault(false)
+            val built = itemBuilder.callMethod("build")
+            responseBuilder.invokeMessageValue("addItems", built) ||
+                responseBuilder.invokeMessageBuilder("addItems", itemBuilder)
         },
     )
 }
@@ -883,6 +905,56 @@ internal fun hasSearchItems(raw: String?): Boolean = runCatching {
 private fun Class<*>.staticCallNoArgs(name: String): Any? = methods.asSequence()
     .firstOrNull { Modifier.isStatic(it.modifiers) && it.name == name && it.parameterCount == 0 }
     ?.let { runCatching { it.invoke(null) }.getOrNull() }
+
+/** Returns the generated message class for either a message or its nested Builder type. */
+private fun Class<*>.messageTypeForBuilder(): Class<*>? {
+    if (methods.any { Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0 }) return this
+    var enclosing = enclosingClass
+    while (enclosing != null) {
+        if (enclosing.methods.any { Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0 }) {
+            return enclosing
+        }
+        enclosing = enclosing.enclosingClass
+    }
+    return null
+}
+
+private fun Class<*>.newMessageBuilder(): Any? = messageTypeForBuilder()?.staticCallNoArgs("newBuilder")
+
+private fun Any.invokeMessageBuilder(name: String, builder: Any): Boolean {
+    val builderMethod = javaClass.allMethods().firstOrNull {
+        it.name == name && it.parameterCount == 1 &&
+            !it.parameterTypes[0].isPrimitive && it.parameterTypes[0].isAssignableFrom(builder.javaClass)
+    }
+    if (builderMethod != null) return runCatching {
+        builderMethod.isAccessible = true
+        builderMethod.invoke(this, builder)
+        true
+    }.getOrDefault(false)
+    val message = builder.callMethod("build") ?: return false
+    val messageMethod = javaClass.allMethods().firstOrNull {
+        it.name == name && it.parameterCount == 1 &&
+            !it.parameterTypes[0].isPrimitive && it.parameterTypes[0].isAssignableFrom(message.javaClass)
+    } ?: return false
+    return runCatching {
+        messageMethod.isAccessible = true
+        messageMethod.invoke(this, message)
+        true
+    }.getOrDefault(false)
+}
+
+private fun Any.invokeMessageValue(name: String, value: Any?): Boolean {
+    if (value == null) return false
+    val method = javaClass.allMethods().firstOrNull {
+        it.name == name && it.parameterCount == 1 &&
+            !it.parameterTypes[0].isPrimitive && it.parameterTypes[0].isAssignableFrom(value.javaClass)
+    } ?: return false
+    return runCatching {
+        method.isAccessible = true
+        method.invoke(this, value)
+        true
+    }.getOrDefault(false)
+}
 
 private fun JSONArray?.forEachObject(action: (JSONObject) -> Unit) {
     if (this == null) return
