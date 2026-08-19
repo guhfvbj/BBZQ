@@ -1,8 +1,11 @@
 package io.github.bbzq.feats.hook
 
+import android.os.Handler
+import android.os.Looper
 import io.github.bbzq.AccessKeyRepository
 import io.github.bbzq.BangumiRegion
 import io.github.bbzq.BangumiServerCredential
+import io.github.bbzq.ModuleDebugLog
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.BaseRoamingHook
 import io.github.bbzq.feats.allMethods
@@ -22,17 +25,26 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
     private val executor = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "bbzq-bangumi-search").apply { isDaemon = true }
     }
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun startHook() {
-        if (env.processName != env.packageName || !ModuleSettings.isAddBangumiEnabled(prefs)) return
-        val searchMoss = SEARCH_MOSS_CLASSES.asSequence().mapNotNull(classLoader::findClassOrNull).firstOrNull()
-        if (searchMoss == null) {
-            log("startHook: BangumiSearchMoss class unavailable")
+        val isMainProcess = env.processName == env.packageName
+        val isEnabled = ModuleSettings.isAddBangumiEnabled(prefs)
+        if (!isMainProcess || !isEnabled) {
+            reportStatus("skipped main=$isMainProcess enabled=$isEnabled")
             return
         }
-        var installed = 0
-        searchMoss.allMethods()
+        val searchMosses = SEARCH_MOSS_CLASSES.mapNotNull(classLoader::findClassOrNull)
+        if (searchMosses.isEmpty()) {
+            reportStatus("unavailable enabled=true classes=0")
+            return
+        }
+        val navigationMethods = searchMosses.asSequence()
+            .flatMap { it.allMethods() }
             .filter { !Modifier.isStatic(it.modifiers) && it.name == "searchAll" && it.parameterCount >= 2 }
+            .distinctBy { it.toGenericString() }
+            .toList()
+        navigationMethods
             .forEach { method ->
                 env.hookBefore(method) { param ->
                     val callbackIndex = param.args.indexOfFirst { it?.isSearchCallback() == true }
@@ -44,10 +56,13 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                     wrapCallback(callback) { response -> addAreaNavigation(response) }
                         ?.let { param.args[callbackIndex] = it }
                 }
-                installed++
             }
-        searchMoss.allMethods()
+        val searchMethods = searchMosses.asSequence()
+            .flatMap { it.allMethods() }
             .filter { !Modifier.isStatic(it.modifiers) && it.name == "searchByType" && it.parameterCount >= 2 }
+            .distinctBy { it.toGenericString() }
+            .toList()
+        searchMethods
             .forEach { method ->
                 env.hookBefore(method) { param ->
                     val invocation = findSearchInvocation(param.args)
@@ -57,12 +72,20 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                     }
                     val type = invocation.request.searchType()
                     val area = BangumiSearchMossModel.areaSearch(type) ?: return@hookBefore
-                    val replacement = requestAreaSearch(invocation.request, invocation.callback, area, method.signature())
+                    val replacement = requestAreaSearch(
+                        request = invocation.request,
+                        callback = invocation.callback,
+                        area = area,
+                        methodSignature = method.signature(),
+                        responseType = responseTypeFor(method),
+                    )
                     if (replacement) param.result = null
                 }
-                installed++
             }
-        log("startHook: BangumiSearchMoss methods=$installed")
+        reportStatus(
+            "installed enabled=true classes=${searchMosses.joinToString { it.name }} " +
+                "nav=${navigationMethods.size} search=${searchMethods.size}",
+        )
     }
 
     private fun requestAreaSearch(
@@ -70,6 +93,7 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         callback: Any,
         area: BangumiSearchMossModel.AreaSearch,
         methodSignature: String,
+        responseType: Class<*>?,
     ): Boolean {
         val keyword = request.string("getKeyword")
         val pagination = request.callMethod("getPagination")
@@ -88,28 +112,42 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
             runCatching {
                 val attempt = requestSearch(area, query)
                 val result = attempt.result
-                val response = result.body?.let { buildSearchResponse(it, keyword, page) }
+                val response = result.body?.let { buildSearchResponse(it, keyword, page, responseType) }
                 if (response != null) {
                     result.body?.let { recordSearchRegions(it, attempt.region) }
-                    callback.callMethod("onNext", response.response)
-                    callback.callMethod("onCompleted")
-                    log(
-                        "BangumiSearchMoss delivered type=${area.type} source=${attempt.region.name} " +
-                            "json_items=${response.jsonItems} proto_items=${response.protoItems} method=$methodSignature",
-                    )
+                    mainHandler.post {
+                        runCatching {
+                            invokeCallback(callback, "onNext", response.response)
+                            invokeCallback(callback, "onCompleted")
+                            val status =
+                                "delivered type=${area.type} source=${attempt.region.name} " +
+                                    "json_items=${response.jsonItems} proto_items=${response.protoItems}"
+                            reportStatus(status)
+                            log("BangumiSearchMoss $status method=$methodSignature")
+                        }.onFailure { error ->
+                            reportStatus("callback failed type=${area.type} ${error.javaClass.simpleName}")
+                            log("BangumiSearchMoss callback failed type=${area.type} method=$methodSignature", error)
+                        }
+                    }
                 } else {
                     throw IllegalStateException("parser response was empty or incompatible")
                 }
-                log(
-                    "BangumiSearchMoss search region=${attempt.region.name} status=${result.httpStatus ?: "transport"} " +
-                        "bytes=${result.byteSize ?: 0} json=${result.isJson} error=${result.error ?: "none"}",
-                )
+                val status =
+                    "response type=${area.type} source=${attempt.region.name} status=${result.httpStatus ?: "transport"} " +
+                        "bytes=${result.byteSize ?: 0} json=${result.isJson} error=${result.error ?: "none"}"
+                reportStatus(status)
+                log("BangumiSearchMoss $status")
             }.onFailure { error ->
-                callback.callMethod("onError", IllegalStateException("Regional search failed", error))
-                log("BangumiSearchMoss search failed type=${area.type} method=$methodSignature", error)
+                mainHandler.post {
+                    runCatching { invokeCallback(callback, "onError", IllegalStateException("Regional search failed", error)) }
+                    reportStatus("failed type=${area.type} ${error.javaClass.simpleName}")
+                    log("BangumiSearchMoss search failed type=${area.type} method=$methodSignature", error)
+                }
             }
         }
-        log("BangumiSearchMoss intercepted type=${area.type} region=${area.region.name} keyword=${keyword.take(80)} method=$methodSignature")
+        val status = "intercepted type=${area.type} region=${area.region.name} keyword_length=${keyword.length}"
+        reportStatus(status)
+        log("BangumiSearchMoss $status method=$methodSignature")
         return true
     }
 
@@ -205,12 +243,12 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
     }.getOrNull()
 
     private fun wrapCallback(callback: Any, transform: (Any?) -> Any?): Any? {
-        callbackInterfaces(callback.javaClass).firstOrNull { type ->
+        val primary = callbackInterfaces(callback.javaClass).firstOrNull { type ->
             type.methods.any { it.name == "onNext" && it.parameterCount == 1 }
         } ?: return null
         return Proxy.newProxyInstance(
             callback.javaClass.classLoader ?: classLoader,
-            callback.javaClass.interfaces,
+            (callback.javaClass.interfaces.toSet() + primary).toTypedArray(),
         ) { _, method, args ->
             if (method.name == "onNext" && args?.isNotEmpty() == true) {
                 args[0] = transform(args[0])
@@ -219,13 +257,39 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         }
     }
 
+    private fun responseTypeFor(method: java.lang.reflect.Method): Class<*>? {
+        val responseClassName = method.declaringClass.name.replace("SearchMoss", "SearchByTypeResponse")
+        return classLoader.findClassOrNull(responseClassName)
+            ?: SEARCH_BY_TYPE_RESPONSE_CLASSES.asSequence().mapNotNull(classLoader::findClassOrNull).firstOrNull()
+    }
+
+    private fun invokeCallback(callback: Any, name: String, vararg args: Any?) {
+        val method = callback.javaClass.allMethods().firstOrNull {
+            it.name == name && it.parameterCount == args.size &&
+                it.parameterTypes.indices.all { index -> accepts(it.parameterTypes[index], args[index]) }
+        } ?: callbackInterfaces(callback.javaClass).flatMap { it.methods.asSequence() }.firstOrNull {
+            it.name == name && it.parameterCount == args.size &&
+                it.parameterTypes.indices.all { index -> accepts(it.parameterTypes[index], args[index]) }
+        } ?: throw IllegalStateException("callback method unavailable: $name/${args.size}")
+        method.isAccessible = true
+        method.invoke(callback, *args)
+    }
+
+    private fun reportStatus(status: String) {
+        ModuleDebugLog.recordRegionalSearchStatus(prefs, status)
+        log("BangumiSearchMoss status: $status")
+    }
+
     private fun Any.string(name: String): String = callMethod(name) as? String ?: ""
     private fun Any.number(name: String): Number? = callMethod(name) as? Number
 
-    private fun buildSearchResponse(raw: String, keyword: String, page: String): SearchResponse? = runCatching {
-        val responseType = SEARCH_BY_TYPE_RESPONSE_CLASSES.asSequence()
-            .mapNotNull(classLoader::findClassOrNull)
-            .firstOrNull() ?: return@runCatching null
+    private fun buildSearchResponse(
+        raw: String,
+        keyword: String,
+        page: String,
+        responseType: Class<*>?,
+    ): SearchResponse? = runCatching {
+        responseType ?: return@runCatching null
         val root = JSONObject(raw)
         if (root.optInt("code") != 0) return@runCatching null
         val data = root.optJSONObject("data") ?: return@runCatching null

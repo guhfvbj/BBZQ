@@ -23,4 +23,11 @@ class ModuleDebugLogTest {
     fun `keeps only the newest bounded log content`() {
         assertEquals("\n345", ModuleDebugLog.appendText("12", "345", maxChars = 4))
     }
+
+    @Test
+    fun `sanitizes regional search status`() {
+        val value = ModuleDebugLog.sanitize("type=1919&token=secret")
+
+        assertEquals("type=1919&token=<redacted>", value)
+    }
 }

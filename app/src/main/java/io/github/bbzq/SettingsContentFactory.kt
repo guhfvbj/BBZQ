@@ -804,6 +804,14 @@ class SettingsContentFactory(
             showDebugLogDialog()
         }
         rows += createClickableInfoRow(
+            context.getString(R.string.regional_search_status_title),
+            ModuleDebugLog.regionalSearchStatus(prefs).ifBlank {
+                context.getString(R.string.regional_search_status_empty)
+            },
+        ) {
+            showRegionalSearchStatusDialog()
+        }
+        rows += createClickableInfoRow(
             context.getString(R.string.about_project_repository_title),
             "HSSkyBoy/BBZQ",
         ) {
@@ -1181,6 +1189,17 @@ class SettingsContentFactory(
                 ModuleDebugLog.clear(prefs)
                 Toast.makeText(context, R.string.debug_log_cleared, Toast.LENGTH_SHORT).show()
             }
+            .show()
+    }
+
+    private fun showRegionalSearchStatusDialog() {
+        val status = ModuleDebugLog.regionalSearchStatus(prefs).ifBlank {
+            context.getString(R.string.regional_search_status_empty)
+        }
+        AlertDialog.Builder(context)
+            .setTitle(R.string.regional_search_status_title)
+            .setMessage(status)
+            .setPositiveButton(R.string.runtime_environment_ok, null)
             .show()
     }
 

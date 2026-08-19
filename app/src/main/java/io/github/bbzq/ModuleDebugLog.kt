@@ -9,6 +9,7 @@ object ModuleDebugLog {
     const val KEY_ENABLED = "debug_log_enabled"
 
     private const val KEY_CONTENT = "debug_log_content"
+    private const val KEY_REGIONAL_SEARCH_STATUS = "regional_search_status"
     private const val MAX_CHARS = 96 * 1024
 
     fun isEnabled(prefs: SharedPreferences): Boolean = prefs.getBoolean(KEY_ENABLED, false)
@@ -35,6 +36,17 @@ object ModuleDebugLog {
         ModuleRemotePreferences.remove(KEY_CONTENT)
     }
 
+    /** Records the latest regional-search state independently of detailed logging. */
+    fun recordRegionalSearchStatus(prefs: SharedPreferences, status: String) {
+        prefs.edit().putString(KEY_REGIONAL_SEARCH_STATUS, sanitize(status).take(MAX_STATUS_CHARS)).apply()
+    }
+
+    fun regionalSearchStatus(prefs: SharedPreferences): String =
+        ModuleRemotePreferences.readString(
+            KEY_REGIONAL_SEARCH_STATUS,
+            prefs.getString(KEY_REGIONAL_SEARCH_STATUS, "").orEmpty(),
+        )
+
     internal fun appendText(existing: String, line: String, maxChars: Int = MAX_CHARS): String {
         if (maxChars <= 0) return ""
         val combined = if (existing.isEmpty()) line else "$existing\n$line"
@@ -48,4 +60,6 @@ object ModuleDebugLog {
     private val SENSITIVE_QUERY = Regex(
         "(?i)(access[_-]?key|authorization|cookie|sign|token)=([^&\\s]+)",
     )
+
+    private const val MAX_STATUS_CHARS = 512
 }
