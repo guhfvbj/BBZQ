@@ -43,7 +43,7 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
                     env.hookAfter(entry.method) { param ->
                         val request = param.args.firstOrNull() ?: return@hookAfter
                         val response = param.result ?: return@hookAfter
-                        if (isEmptyInteractiveResponse(response, entry.methodName)) {
+                        if (isBlockedInteractiveResponse(response, entry.methodName)) {
                             param.result = requestFallback(request, response, entry) ?: response
                         }
                     }
@@ -58,7 +58,7 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
         .flatMap { type -> type.allMethods() }
         .filter { method ->
             !Modifier.isStatic(method.modifiers) &&
-                method.parameterCount >= 2 &&
+                method.parameterCount >= 1 &&
                 method.name.canonicalInteractiveMethod() != null &&
                 method.parameterTypes.firstOrNull()?.allMethods()?.any { it.name == "toByteArray" && it.parameterCount == 0 } == true &&
                 (method.parameterCount == 1 || method.parameterTypes.drop(1).any(::isCallbackType))
@@ -96,7 +96,7 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
             if ((method.name == "onNext" || method.name == "resumeWith") && args?.isNotEmpty() == true) {
                 val response = args[0]
                 if (response != null && response.javaClass.allMethods().any { it.name == "toByteArray" && it.parameterCount == 0 } &&
-                    isEmptyInteractiveResponse(response, entry.methodName)
+                    isBlockedInteractiveResponse(response, entry.methodName)
                 ) {
                     pending.set(true)
                     EXECUTOR.execute {
@@ -158,7 +158,12 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
         return null
     }
 
-    private fun isEmptyInteractiveResponse(response: Any, methodName: String): Boolean = runCatching {
+    private fun isBlockedInteractiveResponse(response: Any, methodName: String): Boolean = runCatching {
+        if (containsRestrictionMarker(response.callMethod("toByteArray") as? ByteArray)) return@runCatching true
+        if (response.number("getCode", "getErrorCode", "getStatusCode") != 0L) return@runCatching true
+        if (response.string("getMessage", "getErrorMessage", "getMsg", "getType").containsRestrictionMarker()) {
+            return@runCatching true
+        }
         val countNames = if (methodName in REPLY_METHODS) {
             arrayOf("getRepliesCount", "getReplyCount", "getListCount", "getItemsCount")
         } else {
@@ -171,6 +176,24 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
         }
         count != null && count == 0
     }.getOrDefault(false)
+
+    private fun Any.string(vararg names: String): String = names.firstNotNullOfOrNull { name ->
+        callMethod(name) as? String
+    }.orEmpty()
+
+    private fun String.containsRestrictionMarker(): Boolean {
+        val value = lowercase()
+        return listOf(
+            "area_limit", "area limit", "region_limit", "region limit",
+            "地区限制", "区域限制", "地区不可用", "not available in your region",
+            "not available in this region", "unavailable in your region",
+        ).any(value::contains)
+    }
+
+    private fun containsRestrictionMarker(bytes: ByteArray?): Boolean {
+        if (bytes == null || bytes.isEmpty()) return false
+        return bytes.toString(Charsets.ISO_8859_1).containsRestrictionMarker()
+    }
 
     private fun parseHostResponse(type: Class<*>, bytes: ByteArray): Any? = runCatching {
         type.allMethods().firstOrNull {
