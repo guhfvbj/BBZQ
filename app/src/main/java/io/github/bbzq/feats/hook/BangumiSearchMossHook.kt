@@ -597,17 +597,18 @@ internal fun Any.createSearchItemAssembly(): SearchItemAssembly? {
             mode = "addItemsBuilder",
         )
     }
-    val addItems = javaClass.methods.firstOrNull {
-        it.name == "addItems" && it.parameterCount == 1 && !it.parameterTypes[0].isPrimitive
-    } ?: return null
+    val addItems = javaClass.methods.asSequence()
+        .filter { it.name == "addItems" && it.parameterCount == 1 && !it.parameterTypes[0].isPrimitive }
+        .firstOrNull { candidate ->
+            candidate.parameterTypes[0].methods.any {
+                Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0
+            }
+        } ?: return null
     val itemType = addItems.parameterTypes[0]
-    if (itemType.methods.none { Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0 }) {
-        return null
-    }
     return SearchItemAssembly(
         create = { itemType.staticCallNoArgs("newBuilder")
             ?: error("SearchItem builder unavailable") },
-        mode = "addItems",
+        mode = "addItems(${itemType.simpleName})",
         append = { itemBuilder ->
             runCatching {
                 addItems.invoke(responseBuilder, itemBuilder.callMethod("build"))

@@ -25,12 +25,18 @@ class AddItemsResponse private constructor() {
 
     class Builder {
         private val items = mutableListOf<AssemblySearchItem>()
+        private var builderItems = 0
+
+        fun addItems(item: AssemblySearchItem.Builder) {
+            builderItems++
+        }
 
         fun addItems(item: AssemblySearchItem) {
             items += item
         }
 
         fun itemCount() = items.size
+        fun builderItemCount() = builderItems
     }
 }
 
@@ -62,9 +68,10 @@ class BangumiSearchMossAssemblyTest {
         val response = AddItemsResponse.newBuilder()
         val assembly = requireNotNull(response.createSearchItemAssembly())
 
-        assertEquals("addItems", assembly.mode)
+        assertEquals("addItems(AssemblySearchItem)", assembly.mode)
         assertTrue(assembly.commit(assembly.newBuilder()))
         assertEquals(1, response.itemCount())
+        assertEquals(0, response.builderItemCount())
     }
 
     @Test
