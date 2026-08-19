@@ -1,6 +1,7 @@
 package io.github.bbzq
 
 import android.content.SharedPreferences
+import android.util.Log
 import java.io.PrintWriter
 import java.io.StringWriter
 
@@ -38,7 +39,13 @@ object ModuleDebugLog {
 
     /** Records the latest regional-search state independently of detailed logging. */
     fun recordRegionalSearchStatus(prefs: SharedPreferences, status: String) {
-        prefs.edit().putString(KEY_REGIONAL_SEARCH_STATUS, sanitize(status).take(MAX_STATUS_CHARS)).apply()
+        val value = sanitize(status).take(MAX_STATUS_CHARS)
+        runCatching {
+            prefs.edit().putString(KEY_REGIONAL_SEARCH_STATUS, value).apply()
+        }.onFailure {
+            // API 102 may expose a read-only preference facade in some host processes.
+            Log.i("BBZQ", "regional search status: $value")
+        }
     }
 
     fun regionalSearchStatus(prefs: SharedPreferences): String =

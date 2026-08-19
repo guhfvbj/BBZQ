@@ -9,15 +9,19 @@ import io.github.bbzq.ModuleDebugLog
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.BaseRoamingHook
 import io.github.bbzq.feats.allMethods
+import io.github.bbzq.feats.allFields
 import io.github.bbzq.feats.callMethod
 import io.github.bbzq.feats.findClassOrNull
 import io.github.bbzq.feats.hookBefore
+import io.github.bbzq.feats.hookAfter
+import io.github.bbzq.feats.appendEnumConstantOrNull
 import io.github.bbzq.feats.bangumi.BangumiParserClient
 import io.github.bbzq.feats.bangumi.BangumiRegionContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
+import java.util.Collections
 import java.util.concurrent.Executors
 
 /** Adds regional search categories and serves their results through BBZQ. */
@@ -26,6 +30,8 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         Thread(runnable, "bbzq-bangumi-search").apply { isDaemon = true }
     }
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val installedFragmentClasses = Collections.synchronizedSet(mutableSetOf<String>())
+    private var classLoadHookInstalled = false
 
     override fun startHook() {
         val isMainProcess = env.processName == env.packageName
@@ -34,6 +40,7 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
             reportStatus("skipped main=$isMainProcess enabled=$isEnabled")
             return
         }
+        installClassLoadBridge()
         val searchMosses = SEARCH_MOSS_CLASSES.mapNotNull(classLoader::findClassOrNull)
         if (searchMosses.isEmpty()) {
             reportStatus("unavailable enabled=true classes=0")
@@ -57,6 +64,8 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                         ?.let { param.args[callbackIndex] = it }
                 }
             }
+        val pageTypeStatus = installResultPageTypes()
+        val fragmentStatus = installResultFragmentTypeFix()
         val searchMethods = searchMosses.asSequence()
             .flatMap { it.allMethods() }
             .filter { !Modifier.isStatic(it.modifiers) && it.name == "searchByType" && it.parameterCount >= 2 }
@@ -84,8 +93,90 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
             }
         reportStatus(
             "installed enabled=true classes=${searchMosses.joinToString { it.name }} " +
-                "nav=${navigationMethods.size} search=${searchMethods.size}",
+                "nav=${navigationMethods.size} search=${searchMethods.size} " +
+                "pageTypes=$pageTypeStatus fragments=$fragmentStatus",
         )
+    }
+
+    private fun installResultPageTypes(): String {
+        val targets = listOf(
+            "com.bilibili.search2.result.pages.BiliMainSearchResultPage\$PageTypes",
+            "com.bilibili.search.result.pages.BiliMainSearchResultPage\$PageTypes",
+        )
+        var found = 0
+        var added = 0
+        targets.mapNotNull(classLoader::findClassOrNull).forEach { type ->
+            found++
+            val hk = type.appendEnumConstantOrNull(
+                "PAGE_BANGUMI_HK_TW",
+                "bilibili://search-result/new-bangumi?from=hk", 1919, "bangumi",
+            )
+            val intl = type.appendEnumConstantOrNull(
+                "PAGE_MOVIE_INTL",
+                "bilibili://search-result/new-movie?from=intl", 1920, "movie",
+            )
+            if (hk) added++
+            if (intl) added++
+        }
+        return "found=$found constants=$added"
+    }
+
+    private fun installResultFragmentTypeFix(): String {
+        val targets = listOf(
+            "com.bilibili.search2.ogv.OgvSearchResultFragment",
+            "com.bilibili.search.ogv.OgvSearchResultFragment",
+            "com.bilibili.search.result.bangumi.ogv.BangumiSearchResultFragment",
+            "com.bilibili.bangumi.ui.page.search.BangumiSearchResultFragment",
+        )
+        var methods = 0
+        targets.mapNotNull(classLoader::findClassOrNull).forEach { type ->
+            if (!installedFragmentClasses.add(type.name)) return@forEach
+            methods += type.allMethods()
+                .filter { it.name == "setUserVisibleCompat" && it.parameterCount == 1 }
+                .distinctBy { it.toGenericString() }
+                .onEach { method ->
+                    env.hookBefore(method) { param ->
+                        val visible = param.args.firstOrNull() as? Boolean ?: return@hookBefore
+                        if (!visible) return@hookBefore
+                        val from = param.thisObject?.callMethod("getArguments")?.callMethod("getString", "from") as? String
+                            ?: return@hookBefore
+                        val targetType = BangumiSearchMossModel.pageTypeFor(from)?.toInt() ?: return@hookBefore
+                        var changed = 0
+                        param.thisObject?.javaClass?.allFields()?.filter {
+                            it.type == Int::class.javaPrimitiveType || it.type == Int::class.javaObjectType
+                        }?.forEach { field ->
+                            runCatching {
+                                if ((field.get(param.thisObject) as? Number)?.toInt() in setOf(7, 8, 1919, 1920)) {
+                                    field.set(param.thisObject, targetType)
+                                    changed++
+                                }
+                            }
+                        }
+                        reportStatus("fragment from=$from type=$targetType changed=$changed")
+                    }
+                }.count()
+        }
+        return "methods=$methods"
+    }
+
+    private fun installClassLoadBridge() {
+        if (classLoadHookInstalled) return
+        val loadClass = runCatching {
+            ClassLoader::class.java.getDeclaredMethod("loadClass", String::class.java, Boolean::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+        }.getOrNull() ?: return
+        classLoadHookInstalled = true
+        env.hookAfter(loadClass) { param ->
+            val name = param.args.firstOrNull() as? String ?: return@hookAfter
+            if (name == "com.bilibili.search2.result.pages.BiliMainSearchResultPage\$PageTypes" ||
+                name == "com.bilibili.search.result.pages.BiliMainSearchResultPage\$PageTypes"
+            ) {
+                installResultPageTypes()
+            }
+            if (name.contains("OgvSearchResultFragment") || name.contains("BangumiSearchResultFragment")) {
+                installResultFragmentTypeFix()
+            }
+        }
     }
 
     private fun requestAreaSearch(
@@ -211,6 +302,8 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
 
     private fun addAreaNavigation(response: Any?): Any? {
         response ?: return null
+        installResultPageTypes()
+        installResultFragmentTypeFix()
         val navs = response.callMethod("getNavList") as? List<*> ?: return response
         if (navs.isEmpty()) return response
         val navType = navs.firstOrNull()?.javaClass ?: return response

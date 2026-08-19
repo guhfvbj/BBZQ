@@ -36,4 +36,12 @@ class BangumiSearchMossModelTest {
             BangumiSearchMossModel.query("86", "2", 20, 80, 0, 16),
         )
     }
+
+    @Test
+    fun `maps result page origin to synthetic search type`() {
+        assertEquals(BangumiSearchMossModel.HK_TW_TYPE, BangumiSearchMossModel.pageTypeFor("hk"))
+        assertEquals(BangumiSearchMossModel.HK_TW_TYPE, BangumiSearchMossModel.pageTypeFor("tw"))
+        assertEquals(BangumiSearchMossModel.INTERNATIONAL_TYPE, BangumiSearchMossModel.pageTypeFor("intl"))
+        assertNull(BangumiSearchMossModel.pageTypeFor("cn"))
+    }
 }
