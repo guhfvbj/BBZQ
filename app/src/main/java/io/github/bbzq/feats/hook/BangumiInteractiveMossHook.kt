@@ -226,10 +226,54 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     private fun parseHostResponse(type: Class<*>, bytes: ByteArray): Any? = runCatching {
-        type.allMethods().firstOrNull {
-            it.name == "parseFrom" && Modifier.isStatic(it.modifiers) &&
+        // Host protobuf versions do not all expose the same generated entry point.
+        // Try the direct factory first, then Parser and Builder APIs used by newer
+        // lite/runtime implementations.
+        val direct = type.allMethods().firstOrNull {
+            Modifier.isStatic(it.modifiers) && it.name == "parseFrom" &&
                 it.parameterTypes.contentEquals(arrayOf(ByteArray::class.java))
-        }?.invoke(null, bytes)
+        }?.let { method -> runCatching { method.invoke(null, bytes) }.getOrNull() }
+        if (direct != null) return@runCatching direct
+
+        val parser = type.allMethods().firstOrNull {
+            Modifier.isStatic(it.modifiers) && it.name == "parser" && it.parameterCount == 0
+        }?.let { method -> runCatching { method.invoke(null) }.getOrNull() }
+            ?: type.allMethods().firstOrNull {
+                Modifier.isStatic(it.modifiers) && it.name == "getDefaultInstance" && it.parameterCount == 0
+            }?.let { method ->
+                runCatching { method.invoke(null) }.getOrNull()?.let { instance ->
+                    instance.javaClass.allMethods().firstOrNull {
+                        it.name == "getParserForType" && it.parameterCount == 0
+                    }?.let { parserMethod -> runCatching { parserMethod.invoke(instance) }.getOrNull() }
+                }
+            }
+        parser?.javaClass?.allMethods()?.firstOrNull {
+            it.name == "parseFrom" && it.parameterTypes.contentEquals(arrayOf(ByteArray::class.java))
+        }?.let { method -> runCatching { method.invoke(parser, bytes) }.getOrNull() }?.let { return@runCatching it }
+
+        val builder = type.allMethods().firstOrNull {
+            Modifier.isStatic(it.modifiers) && it.name == "newBuilder" && it.parameterCount == 0
+        }?.let { method -> runCatching { method.invoke(null) }.getOrNull() }
+        if (builder != null) {
+            val merged = builder.javaClass.allMethods().firstOrNull {
+                it.name == "mergeFrom" && it.parameterTypes.contentEquals(arrayOf(ByteArray::class.java))
+            }?.let { method -> runCatching { method.invoke(builder, bytes) }.getOrNull() }
+            if (merged != null) {
+                merged.javaClass.allMethods().firstOrNull {
+                    it.name == "build" && it.parameterCount == 0
+                }?.let { method -> runCatching { method.invoke(merged) }.getOrNull() }?.let {
+                    return@runCatching it
+                }
+            }
+        }
+        null
+    }.onSuccess { response ->
+        if (response != null) {
+            val raw = response.callMethod("toByteArray") as? ByteArray
+            log("Interactive MOSS host response reconstructed: type=${type.name}, subtitles=${raw?.let { BangumiSubtitleModel.hasSubtitleTrack(it) } == true}")
+        }
+    }.onFailure { error ->
+        log("Interactive MOSS host response reconstruction failed: type=${type.name}", error)
     }.getOrNull()
 
     private fun deliverCompletion(callback: Any, primary: Class<*>) {
