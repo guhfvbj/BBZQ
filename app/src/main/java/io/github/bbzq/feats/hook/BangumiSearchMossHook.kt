@@ -516,7 +516,9 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                 }.getOrNull()
                     ?: throw IllegalStateException("Bangumi card builder invoke failed: ${access.method.name}")
             } else {
-                access.method.parameterTypes[0].staticCallNoArgs("newBuilder")
+                // The setter parameter may be a nested javalite Builder type;
+                // resolve its enclosing message before looking up newBuilder().
+                access.method.parameterTypes[0].newMessageBuilder()
                     ?: throw IllegalStateException("Bangumi card newBuilder failed: ${access.method.name}")
             }
             card.copyFields(item, BANGUMI_FIELDS)
