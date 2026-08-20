@@ -47,13 +47,8 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
             runCatching {
                 env.hookBefore(method) { param ->
                     val request = param.args.firstOrNull() ?: return@hookBefore
-                    val callbackIndex = param.args.indexOfFirst { it?.isMossCallback() == true }
-                    if (callbackIndex < 0) {
-                        log("Bangumi MOSS callback unavailable: ${method.signature()}")
-                        return@hookBefore
-                    }
-                    val callback = param.args[callbackIndex] ?: return@hookBefore
-                    wrapCallback(callback, request, method.name)?.let { param.args[callbackIndex] = it }
+                    val callback = param.args.getOrNull(1) ?: return@hookBefore
+                    wrapCallback(callback, request, method.name)?.let { param.args[1] = it }
                 }
                 env.hookAfter(method) { param ->
                     val request = param.args.firstOrNull() ?: return@hookAfter
@@ -96,8 +91,7 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
     }
 
     private fun wrapCallback(callback: Any, request: Any, methodName: String): Any? {
-        val interfaces = callbackInterfaces(callback.javaClass).toList()
-        val primary = interfaces.firstOrNull { type ->
+        val primary = callback.javaClass.interfaces.firstOrNull { type ->
             type.methods.any { it.name == "onNext" && it.parameterCount == 1 }
         } ?: return null
         val pendingFallback = AtomicBoolean(false)
@@ -112,7 +106,7 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         }
         return Proxy.newProxyInstance(
             callback.javaClass.classLoader ?: classLoader,
-            (interfaces.toSet() + primary).toTypedArray(),
+            (callback.javaClass.interfaces.toSet() + primary).toTypedArray(),
         ) { _, method, args ->
             if (method.name == "onNext" && args?.isNotEmpty() == true) {
                 val response = args[0]
@@ -144,30 +138,6 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         primary.methods.firstOrNull { it.name in COMPLETION_METHODS && it.parameterCount == 0 }
             ?.let { method -> runCatching { method.invoke(callback) } }
     }
-
-    private fun Any.isMossCallback(): Boolean =
-        javaClass.allMethods().any { it.name == "onNext" && it.parameterCount == 1 } ||
-            callbackInterfaces(javaClass).any { type ->
-                type.methods.any { it.name == "onNext" && it.parameterCount == 1 }
-            }
-
-    private fun callbackInterfaces(type: Class<*>): Sequence<Class<*>> = sequence {
-        val seen = mutableSetOf<Class<*>>()
-        val pending = ArrayDeque<Class<*>>().apply { add(type) }
-        while (pending.isNotEmpty()) {
-            val current = pending.removeFirst()
-            current.interfaces.forEach { interfaceType ->
-                if (seen.add(interfaceType)) {
-                    yield(interfaceType)
-                    pending.addLast(interfaceType)
-                }
-            }
-            current.superclass?.let(pending::addLast)
-        }
-    }
-
-    private fun Method.signature(): String =
-        "$name(${parameterTypes.joinToString { it.simpleName }})"
 
     private fun replaceIfBlocked(request: Any, response: Any?, source: String, alreadyBlocked: Boolean = false): Any? {
         val requestKind = request.javaClass.name.substringAfterLast('.')
