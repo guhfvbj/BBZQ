@@ -244,6 +244,9 @@ internal object BangumiParserClient {
             setRequestProperty("Build", BuildConfig.VERSION_CODE.toString())
             setRequestProperty("x-from-bbzq", BuildConfig.RELEASE_NAME)
             setRequestProperty("platform-from-bbzq", credential?.platform.orEmpty())
+            credential?.accessKey?.takeIf(String::isNotBlank)?.let {
+                setRequestProperty("Authorization", "identify_v1 $it")
+            }
             outputStream.use { it.write(body) }
             val code = responseCode
             val stream = if (code in 200..299) inputStream else errorStream
@@ -266,7 +269,10 @@ internal object BangumiParserClient {
             ((bytes[3].toInt() and 0xff) shl 8) or
             (bytes[4].toInt() and 0xff)
         return if ((bytes[0].toInt() == 0 || bytes[0].toInt() == 1) && length in 0..bytes.size - 5) {
-            bytes.copyOfRange(5, 5 + length)
+            val payload = bytes.copyOfRange(5, 5 + length)
+            if (bytes[0].toInt() == 1) {
+                GZIPInputStream(payload.inputStream()).use { it.readBytes() }
+            } else payload
         } else bytes
     }
 
