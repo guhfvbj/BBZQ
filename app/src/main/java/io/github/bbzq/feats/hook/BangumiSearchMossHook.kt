@@ -151,9 +151,15 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                             ?: return@hookBefore
                         val targetType = BangumiSearchMossModel.pageTypeFor(from)?.toInt() ?: return@hookBefore
                         var changed = 0
-                        param.thisObject?.javaClass?.allFields()?.filter {
-                            it.type == Int::class.javaPrimitiveType || it.type == Int::class.javaObjectType
-                        }?.forEach { field ->
+                        val fragmentClass = param.thisObject?.javaClass ?: return@hookBefore
+                        // Only fields declared by the concrete result fragment are eligible.
+                        // Walking into Fragment would otherwise rewrite mState (RESUMED=7)
+                        // and leave FragmentManager in a non-converging state on pause.
+                        fragmentClass.declaredFields.asSequence().filter { field ->
+                            field.declaringClass == fragmentClass &&
+                                (field.type == Int::class.javaPrimitiveType || field.type == Int::class.javaObjectType) &&
+                                !field.name.isFragmentFrameworkField()
+                        }.forEach { field ->
                             runCatching {
                                 // Only migrate the host's legacy values. Once changed, do not
                                 // rewrite the same fields on every visibility transition: that
@@ -504,7 +510,10 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
                     "Bangumi card builder unavailable: ${searchItem.cardAccessDiagnostics()}"
                 )
             val card = if (access.viaGetter) {
-                runCatching { access.method.invoke(searchItem) }.getOrNull()
+                runCatching {
+                    access.method.isAccessible = true
+                    access.method.invoke(searchItem)
+                }.getOrNull()
                     ?: throw IllegalStateException("Bangumi card builder invoke failed: ${access.method.name}")
             } else {
                 access.method.parameterTypes[0].staticCallNoArgs("newBuilder")
@@ -674,7 +683,10 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
         val method = javaClass.allMethods().firstOrNull {
             it.name == name && it.parameterCount == 1 && accepts(it.parameterTypes[0], value)
         } ?: return
-        runCatching { method.invoke(this, value) }
+        runCatching {
+            method.isAccessible = true
+            method.invoke(this, value)
+        }
     }
 
     private fun Any.invokeMessageBuilder(name: String, builder: Any): Boolean {
@@ -699,7 +711,18 @@ class BangumiSearchMossHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingH
 
     private fun Class<*>.staticCall(name: String): Any? = methods.firstOrNull {
         Modifier.isStatic(it.modifiers) && it.name == name && it.parameterCount == 0
-    }?.let { runCatching { it.invoke(null) }.getOrNull() }
+    }?.let { runCatching {
+        it.isAccessible = true
+        it.invoke(null)
+    }.getOrNull() }
+
+    private fun String.isFragmentFrameworkField(): Boolean {
+        val normalized = lowercase()
+        return normalized in setOf(
+            "mstate", "mfragmentid", "mcontainerid", "mbackstacknesting", "mstateafteranimation",
+            "mcalled", "madded", "mremoving", "mfromlayout", "minlayout", "mhidden",
+        ) || normalized.contains("state") && normalized.startsWith("m")
+    }
 
     private fun callbackInterfaces(type: Class<*>): Sequence<Class<*>> = sequence {
         val seen = mutableSetOf<Class<*>>()
@@ -904,7 +927,10 @@ internal fun hasSearchItems(raw: String?): Boolean = runCatching {
 
 private fun Class<*>.staticCallNoArgs(name: String): Any? = methods.asSequence()
     .firstOrNull { Modifier.isStatic(it.modifiers) && it.name == name && it.parameterCount == 0 }
-    ?.let { runCatching { it.invoke(null) }.getOrNull() }
+    ?.let { runCatching {
+        it.isAccessible = true
+        it.invoke(null)
+    }.getOrNull() }
 
 /** Returns the generated message class for either a message or its nested Builder type. */
 private fun Class<*>.messageTypeForBuilder(): Class<*>? {
