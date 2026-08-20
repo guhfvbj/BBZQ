@@ -118,3 +118,30 @@ message PlayViewUniteReq {
   optional VideoVod vod = 1;
   map<string, string> extra_content = 4;
 }
+
+message SubtitleUserInfo {}
+
+message SubtitleItem {
+  optional int64 id = 1;
+  optional string id_str = 2;
+  optional string lan = 3;
+  optional string lan_doc = 4;
+  optional string subtitle_url = 5;
+  optional SubtitleUserInfo author = 6;
+  optional int32 type = 7;
+  optional string lan_doc_brief = 8;
+}
+
+message VideoSubtitle {
+  optional string lan = 1;
+  optional string lan_doc = 2;
+  repeated SubtitleItem subtitles = 3;
+}
+
+// Only the fields needed for subtitle augmentation are declared. Protobuf
+// unknown fields preserve the rest of the host app's evolving DmView reply.
+message DmViewReply {
+  optional bool closed = 1;
+  optional bytes mask = 2;
+  optional VideoSubtitle subtitle = 3;
+}

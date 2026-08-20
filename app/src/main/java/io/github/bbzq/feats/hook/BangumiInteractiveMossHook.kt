@@ -13,6 +13,7 @@ import io.github.bbzq.feats.hookAfter
 import io.github.bbzq.feats.hookBefore
 import io.github.bbzq.feats.bangumi.BangumiParserClient
 import io.github.bbzq.feats.bangumi.BangumiRegionContext
+import io.github.bbzq.feats.bangumi.BangumiSubtitleModel
 import android.os.Handler
 import android.os.Looper
 import java.lang.reflect.InvocationTargetException
@@ -34,6 +35,7 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
                 if (entry.method.parameterTypes.drop(1).any(::isCallbackType)) {
                     env.hookBefore(entry.method) { param ->
                         val request = param.args.firstOrNull() ?: return@hookBefore
+                        prepareDmViewContext(request, entry)
                         val callbackIndex = param.args.indexOfFirst(::isCallback)
                         if (callbackIndex < 0) return@hookBefore
                         val callback = param.args[callbackIndex] ?: return@hookBefore
@@ -43,9 +45,11 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
                     env.hookAfter(entry.method) { param ->
                         val request = param.args.firstOrNull() ?: return@hookAfter
                         val response = param.result ?: return@hookAfter
-                        if (isBlockedInteractiveResponse(response, entry.methodName)) {
-                            param.result = requestFallback(request, response, entry) ?: response
-                        }
+                        prepareDmViewContext(request, entry)
+                        val routed = if (isBlockedInteractiveResponse(response, entry.methodName)) {
+                            requestFallback(request, response, entry) ?: response
+                        } else response
+                        param.result = addSimplifiedTrack(routed, entry)
                     }
                 }
             }.onFailure { log("Interactive MOSS hook install failed: ${entry.method.name}", it) }
@@ -103,12 +107,16 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
                         val replacement = requestFallback(request, response, entry)
                         MAIN_HANDLER.post {
                             @Suppress("UNCHECKED_CAST")
-                            (args as Array<Any?>)[0] = replacement ?: response
+                            (args as Array<Any?>)[0] = addSimplifiedTrack(replacement ?: response, entry)
                             deliver(method, args)
                             if (completed.get()) deliverCompletion(callback, primary)
                         }
                     }
                     return@newProxyInstance null
+                }
+                if (response != null) {
+                    @Suppress("UNCHECKED_CAST")
+                    (args as Array<Any?>)[0] = addSimplifiedTrack(response, entry)
                 }
             }
             if (method.name in COMPLETION_METHODS && pending.get()) {
@@ -156,6 +164,21 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
         }
         submitted.forEach { it.cancel(true) }
         return null
+    }
+
+    private fun prepareDmViewContext(request: Any, entry: Entry) {
+        if (entry.methodName != "dmView") return
+        val contentId = request.number("getOid", "getCid", "getContentId")
+        BangumiRegionContext.prepareDmView(contentId)
+    }
+
+    private fun addSimplifiedTrack(response: Any, entry: Entry): Any {
+        if (entry.methodName != "dmView" || !ModuleSettings.isBangumiSubtitleHantToHansEnabled(prefs)) return response
+        val raw = response.callMethod("toByteArray") as? ByteArray ?: return response
+        val converted = BangumiSubtitleModel.addSimplifiedTrack(raw) ?: return response
+        return parseHostResponse(response.javaClass, converted)?.also {
+            log("Bangumi subtitle: generated simplified Chinese track")
+        } ?: response
     }
 
     private fun isBlockedInteractiveResponse(response: Any, methodName: String): Boolean = runCatching {

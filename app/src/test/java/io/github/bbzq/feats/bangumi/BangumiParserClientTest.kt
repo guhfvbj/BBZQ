@@ -51,6 +51,14 @@ class BangumiParserClientTest {
                 true,
             ),
         )
+        assertEquals(
+            "https://parser.example/bilibili.community.service.dm.v1.DM/DmView?x=1",
+            BangumiParserClient.buildGrpcProxyUrl(
+                "parser.example",
+                URI("https://grpc.biliapi.net/bilibili.community.service.dm.v1.DM/DmView?x=1"),
+                true,
+            ),
+        )
     }
 
     @Test

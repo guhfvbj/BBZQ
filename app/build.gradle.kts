@@ -178,4 +178,5 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.protobuf.javalite)
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20250517")
 }

@@ -7,10 +7,13 @@ import java.util.concurrent.atomic.AtomicReference
 /** Shared region information collected from parser-backed search and season responses. */
 internal object BangumiRegionContext {
     private const val ACTIVE_REGION_TTL_MS = 5 * 60 * 1000L
+    private const val DM_VIEW_ROUTE_TTL_MS = 10_000L
     private val episodeRegions = ConcurrentHashMap<String, BangumiRegion>()
     private val seasonRegions = ConcurrentHashMap<String, BangumiRegion>()
+    private val contentRegions = ConcurrentHashMap<String, BangumiRegion>()
     private val episodeReferences = ConcurrentHashMap<String, EpisodeReference>()
     private val activeRegion = AtomicReference<ActiveRegion?>(null)
+    private val pendingDmViewRegion = AtomicReference<ActiveRegion?>(null)
 
     fun recordEpisode(id: String?, region: BangumiRegion) {
         id?.takeIf(String::isNotBlank)?.let { episodeRegions[it] = region }
@@ -28,6 +31,7 @@ internal object BangumiRegionContext {
         val season = seasonId?.toLongOrNull()?.takeIf { it > 0 } ?: 0L
         val reference = EpisodeReference(region, season, episode, content, isMovie)
         episodeRegions[episode.toString()] = region
+        contentRegions[content.toString()] = region
         episodeReferences[episode.toString()] = reference
         if (season != 0L) seasonRegions[season.toString()] = region
     }
@@ -74,6 +78,19 @@ internal object BangumiRegionContext {
     fun seasonRegion(id: Long): BangumiRegion? =
         id.takeIf { it != 0L }?.let { seasonRegions[it.toString()] }
 
+    fun contentRegion(id: Long): BangumiRegion? =
+        id.takeIf { it != 0L }?.let { contentRegions[it.toString()] }
+
+    fun prepareDmView(contentId: Long) {
+        val region = contentRegion(contentId)
+        pendingDmViewRegion.set(region?.let { ActiveRegion(it, System.currentTimeMillis() + DM_VIEW_ROUTE_TTL_MS) })
+    }
+
+    fun consumeDmViewRegion(): BangumiRegion? {
+        val pending = pendingDmViewRegion.getAndSet(null) ?: return null
+        return pending.region.takeIf { pending.expiresAtMillis > System.currentTimeMillis() }
+    }
+
     fun activeRegion(): BangumiRegion? = currentActiveRegion()
 
     data class EpisodeReference(
@@ -92,4 +109,5 @@ internal object BangumiRegionContext {
     }
 
     private data class ActiveRegion(val region: BangumiRegion, val expiresAtMillis: Long)
+
 }

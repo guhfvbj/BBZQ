@@ -325,6 +325,13 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
             if (attempt.payload?.hasPlayableStream() == true) {
                 submitted.forEach { it.cancel(true) }
                 BangumiRegionContext.recordEpisode(attempt.episode.id.toString(), attempt.region)
+                BangumiRegionContext.recordEpisodeReference(
+                    attempt.episode.id.toString(),
+                    attempt.episode.cid.toString(),
+                    requestedSeasonId.toString(),
+                    attempt.region,
+                    reference?.isMovie == true,
+                )
                 requestedSeasonId.takeIf { it != 0L }?.toString()?.let {
                     BangumiRegionContext.recordSeason(it, attempt.region)
                 }

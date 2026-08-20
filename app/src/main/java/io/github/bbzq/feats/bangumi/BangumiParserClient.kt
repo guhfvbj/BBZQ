@@ -315,6 +315,7 @@ internal object BangumiParserClient {
         val required = buildSet {
             addAll(setOf("search", "season", "playurl"))
             if (region == BangumiRegion.INTL) add("subtitle")
+            if (region == BangumiRegion.HK || region == BangumiRegion.TW) add("grpc-dm-view")
         }
         if (declared != null && !declared.capabilities.containsAll(required)) {
             return ProbeResult("检查失败：服务器缺少${(required - declared.capabilities).joinToString("、")}接口")

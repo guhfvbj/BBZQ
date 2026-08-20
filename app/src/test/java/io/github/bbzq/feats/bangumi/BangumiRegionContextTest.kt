@@ -61,4 +61,23 @@ class BangumiRegionContextTest {
         )
         assertEquals("859778302", resolved["cid"])
     }
+
+    @Test
+    fun `records content region for dm view routing`() {
+        BangumiRegionContext.recordEpisodeReference(
+            episodeId = "94001",
+            cid = "95001",
+            seasonId = "96001",
+            region = BangumiRegion.TW,
+            isMovie = false,
+        )
+
+        assertEquals(BangumiRegion.TW, BangumiRegionContext.contentRegion(95001L))
+        BangumiRegionContext.prepareDmView(95001L)
+        assertEquals(BangumiRegion.TW, BangumiRegionContext.consumeDmViewRegion())
+        assertEquals(null, BangumiRegionContext.consumeDmViewRegion())
+
+        BangumiRegionContext.prepareDmView(99999999L)
+        assertEquals(null, BangumiRegionContext.consumeDmViewRegion())
+    }
 }
