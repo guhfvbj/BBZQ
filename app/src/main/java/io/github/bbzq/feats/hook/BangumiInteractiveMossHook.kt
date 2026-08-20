@@ -46,7 +46,7 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
                         val request = param.args.firstOrNull() ?: return@hookAfter
                         val response = param.result ?: return@hookAfter
                         prepareDmViewContext(request, entry)
-                        val routed = if (isBlockedInteractiveResponse(response, entry.methodName)) {
+                        val routed = if (needsFallback(response, entry)) {
                             requestFallback(request, response, entry) ?: response
                         } else response
                         param.result = addSimplifiedTrack(routed, entry)
@@ -100,7 +100,7 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
             if ((method.name == "onNext" || method.name == "resumeWith") && args?.isNotEmpty() == true) {
                 val response = args[0]
                 if (response != null && response.javaClass.allMethods().any { it.name == "toByteArray" && it.parameterCount == 0 } &&
-                    isBlockedInteractiveResponse(response, entry.methodName)
+                    needsFallback(response, entry)
                 ) {
                     pending.set(true)
                     EXECUTOR.execute {
@@ -179,6 +179,13 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
         return parseHostResponse(response.javaClass, converted)?.also {
             log("Bangumi subtitle: generated simplified Chinese track")
         } ?: response
+    }
+
+    private fun needsFallback(response: Any, entry: Entry): Boolean {
+        if (isBlockedInteractiveResponse(response, entry.methodName)) return true
+        if (entry.methodName != "dmView") return false
+        val raw = response.callMethod("toByteArray") as? ByteArray ?: return true
+        return !BangumiSubtitleModel.hasSubtitleTrack(raw)
     }
 
     private fun isBlockedInteractiveResponse(response: Any, methodName: String): Boolean = runCatching {

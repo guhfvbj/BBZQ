@@ -11,6 +11,20 @@ import org.junit.Test
 
 class BangumiSubtitleModelTest {
     @Test
+    fun detectsWhetherDmViewContainsSubtitleTracks() {
+        val withTrack = DmViewReply.newBuilder()
+            .setSubtitle(
+                VideoSubtitle.newBuilder().addSubtitles(
+                    SubtitleItem.newBuilder().setId(1).setLan("zh-Hant").setSubtitleUrl("https://example.com/1.json"),
+                ),
+            )
+            .build()
+
+        assertTrue(BangumiSubtitleModel.hasSubtitleTrack(withTrack.toByteArray()))
+        assertFalse(BangumiSubtitleModel.hasSubtitleTrack(DmViewReply.getDefaultInstance().toByteArray()))
+    }
+
+    @Test
     fun `adds separate simplified track without changing traditional track`() {
         val original = reply(track(10, "zh-Hant", "繁體中文", "https://aisubtitle.hdslb.com/a.json?token=1"))
 

@@ -9,6 +9,11 @@ internal object BangumiSubtitleModel {
     const val CONVERTER_PARAMETER = "zh_converter"
     const val CONVERTER_VALUE = "t2cn"
 
+    fun hasSubtitleTrack(raw: ByteArray): Boolean = runCatching {
+        val reply = DmViewReply.parseFrom(raw)
+        reply.hasSubtitle() && reply.subtitle.subtitlesCount > 0
+    }.getOrDefault(false)
+
     fun addSimplifiedTrack(raw: ByteArray): ByteArray? = runCatching {
         val reply = DmViewReply.parseFrom(raw)
         if (!reply.hasSubtitle()) return null
