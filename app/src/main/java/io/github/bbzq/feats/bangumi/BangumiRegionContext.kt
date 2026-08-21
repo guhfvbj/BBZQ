@@ -39,13 +39,17 @@ internal object BangumiRegionContext {
     }
 
     fun referenceFor(episodeId: Long, cid: Long, seasonId: Long): EpisodeReference? {
-        val direct = episodeId.takeIf { it != 0L }?.let { episodeReferences[it.toString()] }
+        val direct = episodeId.takeIf { it > 0L }?.let { episodeReferences[it.toString()] }
         if (direct != null) return direct
-        val content = cid.takeIf { it != 0L }?.let { contentReferences[it.toString()] }
+        val content = cid.takeIf { it > 0L }?.let { contentReferences[it.toString()] }
         if (content != null) return content
-        return seasonId.takeIf { it != 0L }
+        return seasonId.takeIf { it > 0L }
             ?.let { season -> episodeReferences.values.firstOrNull { it.seasonId == season } }
     }
+
+    fun isKnownEpisode(id: Long): Boolean = id > 0L && episodeReferences.containsKey(id.toString())
+
+    fun isKnownContent(id: Long): Boolean = id > 0L && contentReferences.containsKey(id.toString())
 
     fun resolvePlayQuery(query: Map<String, String>, region: BangumiRegion): Map<String, String> {
         if (region != BangumiRegion.INTL) return query

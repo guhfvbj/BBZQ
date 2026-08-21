@@ -185,7 +185,7 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }.orEmpty()
 
     private fun Any.number(vararg names: String): Long = names.firstNotNullOfOrNull { name ->
-        callMethod(name)?.let { it as? Number }?.toLong()?.takeIf { it != 0L }
+        callMethod(name)?.let { it as? Number }?.toLong()?.takeIf { it > 0L }
     } ?: 0L
 
     private fun String.containsRestrictionMarker(): Boolean {

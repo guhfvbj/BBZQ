@@ -34,8 +34,18 @@ internal object BangumiParserClient {
         val byteSize: Int? = null,
         val isJson: Boolean = false,
         val isHtml: Boolean = false,
+        val businessCode: Long? = null,
+        val businessMessage: String? = null,
     ) {
         val isSuccess: Boolean get() = body?.contains(Regex("\"code\"\\s*:\\s*0\\b")) == true
+
+        val businessError: String?
+            get() = businessCode?.takeIf { it != 0L }?.let { code ->
+                val message = businessMessage
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { io.github.bbzq.ModuleDebugLog.sanitize(it).take(160) }
+                "code=$code${message?.let { ", message=$it" }.orEmpty()}"
+            }
     }
 
     data class ProbeResult(val message: String)
@@ -430,8 +440,21 @@ internal object BangumiParserClient {
                     !isJson -> "HTTP $code non-JSON response${contentType?.let { " ($it)" }.orEmpty()}, bytes=${bytes?.size ?: 0}${safePreview(body)?.let { ", preview=$it" }.orEmpty()}"
                     else -> null
                 }
+                val json = if (isJson) runCatching { org.json.JSONObject(trimmed) }.getOrNull() else null
+                val businessCode = json?.takeIf { it.has("code") }?.optLong("code")
+                val businessMessage = json?.optString("message")?.takeIf(String::isNotBlank)
                 disconnect()
-                Result(body, error, code, contentType, bytes?.size, isJson, isHtml)
+                Result(
+                    body = body,
+                    error = error,
+                    httpStatus = code,
+                    contentType = contentType,
+                    byteSize = bytes?.size,
+                    isJson = isJson,
+                    isHtml = isHtml,
+                    businessCode = businessCode,
+                    businessMessage = businessMessage,
+                )
             }
         }.getOrElse { Result(null, it.message ?: it.javaClass.simpleName) }
     }
