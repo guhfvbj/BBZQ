@@ -25,6 +25,7 @@ internal object BangumiParserClient {
     // app identity is omitted. This is also the identity used by the host app.
     private const val MAIN_APP_KEY = "1d8b6e7d45233436"
     private const val MAIN_BUILD = "9060300"
+    private const val MAIN_WEB_SEASON_PATH = "/pgc/view/web/season"
 
     data class Result(
         val body: String?,
@@ -120,6 +121,24 @@ internal object BangumiParserClient {
         classLoader: ClassLoader,
         useHttps: Boolean = true,
     ): Result {
+        // The APP season endpoint intermittently stalls for otherwise valid
+        // regional titles. The web endpoint returns the same episode ids/cids
+        // and is the reliable metadata source needed by the playback fallback.
+        if (region != BangumiRegion.INTL) {
+            val webParams = LinkedHashMap(query).apply {
+                credential?.accessKey?.takeIf(String::isNotBlank)?.let { put("access_key", it) }
+                put("area", region.name.lowercase())
+            }
+            val webResult = request(
+                host,
+                MAIN_WEB_SEASON_PATH,
+                encode(webParams),
+                credential?.platform ?: region.defaultPlatform,
+                useHttps,
+            )
+            if (isUsableSeasonResult(webResult)) return webResult
+        }
+
         val params = LinkedHashMap(query)
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
         val path = if (region == BangumiRegion.INTL) {
@@ -137,6 +156,10 @@ internal object BangumiParserClient {
         }
         return request(host, path, sign(params, classLoader), credential?.platform ?: region.defaultPlatform, useHttps)
     }
+
+    internal fun isUsableSeasonResult(result: Result): Boolean =
+        result.body != null && result.isJson && result.isSuccess &&
+            (result.businessCode == null || result.businessCode == 0L)
 
     fun buildPlayUrl(
         region: BangumiRegion,

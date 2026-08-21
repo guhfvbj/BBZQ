@@ -3,7 +3,9 @@ package io.github.bbzq.feats.bangumi
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.BangumiRegion
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.URI
 
@@ -86,5 +88,31 @@ class BangumiParserClientTest {
         ).forEach {
             assertEquals(true, url.contains(it))
         }
+    }
+
+    @Test
+    fun `accepts successful regional web season response`() {
+        val result = BangumiParserClient.Result(
+            body = "{\"code\":0,\"result\":{\"episodes\":[]}}",
+            httpStatus = 200,
+            contentType = "application/json",
+            isJson = true,
+            businessCode = 0,
+        )
+
+        assertTrue(BangumiParserClient.isUsableSeasonResult(result))
+    }
+
+    @Test
+    fun `rejects regional season business errors`() {
+        val result = BangumiParserClient.Result(
+            body = "{\"code\":-10403,\"message\":\"抱歉您所在地区不可观看！\"}",
+            httpStatus = 200,
+            contentType = "application/json",
+            isJson = true,
+            businessCode = -10403,
+        )
+
+        assertFalse(BangumiParserClient.isUsableSeasonResult(result))
     }
 }
