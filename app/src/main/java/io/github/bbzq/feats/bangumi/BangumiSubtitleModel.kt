@@ -14,6 +14,17 @@ internal object BangumiSubtitleModel {
         reply.hasSubtitle() && reply.subtitle.subtitlesCount > 0
     }.getOrDefault(false)
 
+    fun mergeSubtitleTrack(original: ByteArray, external: ByteArray): ByteArray? = runCatching {
+        val originalReply = DmViewReply.parseFrom(original)
+        if (hasSubtitleTrack(original)) return null
+        val externalReply = DmViewReply.parseFrom(external)
+        if (!hasSubtitleTrack(external)) return null
+        originalReply.toBuilder()
+            .setSubtitle(externalReply.subtitle)
+            .build()
+            .toByteArray()
+    }.getOrNull()
+
     fun addSimplifiedTrack(raw: ByteArray): ByteArray? = runCatching {
         val reply = DmViewReply.parseFrom(raw)
         if (!reply.hasSubtitle()) return null

@@ -1,8 +1,5 @@
 package io.github.bbzq.feats.hook
 
-import io.github.bbzq.AccessKeyRepository
-import io.github.bbzq.BangumiRegion
-import io.github.bbzq.BangumiServerCredential
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.BaseRoamingHook
 import io.github.bbzq.feats.RoamingEnv
@@ -11,7 +8,7 @@ import io.github.bbzq.feats.callMethod
 import io.github.bbzq.feats.findClassOrNull
 import io.github.bbzq.feats.hookAfter
 import io.github.bbzq.feats.hookBefore
-import io.github.bbzq.feats.bangumi.BangumiParserClient
+import io.github.bbzq.feats.bangumi.BangumiDmViewFallback
 import io.github.bbzq.feats.bangumi.BangumiRegionContext
 import io.github.bbzq.feats.bangumi.BangumiSubtitleModel
 import android.os.Handler
@@ -20,9 +17,7 @@ import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
-import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Best-effort regional proxy for comments and ordinary danmaku. */
@@ -128,53 +123,20 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     private fun requestFallback(request: Any, original: Any, entry: Entry): Any? {
-        val bytes = request.callMethod("toByteArray") as? ByteArray ?: return null
-        // dmView's oid is the content id, not an episode id. Keep it out of the
-        // episode lookup so that a known content-to-region mapping wins.
-        val epId = request.number("getEpId", "getEpisodeId", "getAid", "getObjectId")
-        val cid = if (entry.methodName == "dmView") {
-            request.number("getOid", "getCid", "getContentId")
+        val fallback = BangumiDmViewFallback.request(
+            request = request,
+            service = entry.service,
+            methodName = entry.methodName,
+            prefs = prefs,
+            source = "moss",
+        ) { message -> log(message) } ?: return null
+        val payload = if (entry.methodName == "dmView") {
+            val originalBytes = original.callMethod("toByteArray") as? ByteArray ?: return null
+            BangumiSubtitleModel.mergeSubtitleTrack(originalBytes, fallback.payload) ?: return null
         } else {
-            request.number("getCid", "getContentId")
+            fallback.payload
         }
-        val seasonId = request.number("getSeasonId", "getSeason")
-        val regions = BangumiRegionContext.candidates(epId, seasonId, cid)
-        val attempts = ExecutorCompletionService<FallbackResponse?>(EXECUTOR)
-        val submitted = regions.mapNotNull { region ->
-            val host = ModuleSettings.getBangumiServerHost(prefs, region) ?: return@mapNotNull null
-            attempts.submit {
-                val credential = parserCredential(region)
-                val result = BangumiParserClient.requestGrpc(
-                    host = host,
-                    service = entry.service,
-                    method = entry.methodName.grpcMethodName(),
-                    body = bytes,
-                    credential = credential,
-                    useHttps = ModuleSettings.isBangumiServerHttps(prefs, region),
-                )
-                val hasSubtitle = entry.methodName == "dmView" &&
-                    result?.let { BangumiSubtitleModel.hasSubtitleTrack(it) } == true
-                log(
-                    "Interactive MOSS fallback response: kind=${entry.methodName}, region=${region.name}, " +
-                        "bytes=${result?.size ?: 0}, subtitles=$hasSubtitle, ep=$epId, cid=$cid",
-                )
-                result?.let { FallbackResponse(region, it, hasSubtitle) }
-            }
-        }
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FALLBACK_TIMEOUT_MS)
-        repeat(submitted.size) {
-            val remaining = deadline - System.nanoTime()
-            if (remaining <= 0L) return@repeat
-            val attempt = runCatching { attempts.poll(remaining, TimeUnit.NANOSECONDS)?.get() }.getOrNull() ?: return@repeat
-            if (attempt.payload.isEmpty()) return@repeat
-            if (entry.methodName == "dmView" && !attempt.hasSubtitle) return@repeat
-            parseHostResponse(original.javaClass, attempt.payload)?.let { replacement ->
-                submitted.forEach { it.cancel(true) }
-                return replacement
-            }
-        }
-        submitted.forEach { it.cancel(true) }
-        return null
+        return parseHostResponse(original.javaClass, payload)
     }
 
     private fun prepareDmViewContext(request: Any, entry: Entry) {
@@ -221,6 +183,10 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
     private fun Any.string(vararg names: String): String = names.firstNotNullOfOrNull { name ->
         callMethod(name) as? String
     }.orEmpty()
+
+    private fun Any.number(vararg names: String): Long = names.firstNotNullOfOrNull { name ->
+        callMethod(name)?.let { it as? Number }?.toLong()?.takeIf { it != 0L }
+    } ?: 0L
 
     private fun String.containsRestrictionMarker(): Boolean {
         val value = lowercase()
@@ -292,14 +258,6 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
             ?.let { runCatching { it.invoke(callback) } }
     }
 
-    private fun parserCredential(region: BangumiRegion): BangumiServerCredential? =
-        ModuleSettings.getBangumiServerCredential(prefs, region)
-            ?: AccessKeyRepository.read(prefs)?.let { BangumiServerCredential(it, region.defaultPlatform) }
-
-    private fun Any.number(vararg names: String): Long = names.firstNotNullOfOrNull { name ->
-        callMethod(name)?.let { it as? Number }?.toLong()?.takeIf { it != 0L }
-    } ?: 0L
-
     private fun isCallback(value: Any?): Boolean = value?.javaClass?.interfaces?.any(::isCallbackType) == true
 
     private fun isCallbackType(type: Class<*>): Boolean =
@@ -308,12 +266,6 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
         }
 
     private data class Entry(val method: Method, val service: String, val methodName: String)
-
-    private data class FallbackResponse(
-        val region: BangumiRegion,
-        val payload: ByteArray,
-        val hasSubtitle: Boolean,
-    )
 
     private companion object {
         val EXECUTOR = Executors.newFixedThreadPool(3) { task ->
@@ -334,10 +286,6 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
         const val REPLY_SERVICE = "bilibili.main.community.reply.v1.Reply"
         const val REPLY_V2_SERVICE = "bilibili.main.community.reply.v2.Reply"
         const val DM_SERVICE = "bilibili.community.service.dm.v1.DM"
-        const val FALLBACK_TIMEOUT_MS = 8_000L
-
-        fun String.grpcMethodName(): String = replaceFirstChar { it.uppercase() }
-
         fun String.canonicalInteractiveMethod(): String? = when (this) {
             "mainList", "executeMainList" -> "mainList"
             "subjectDescription", "executeSubjectDescription" -> "subjectDescription"

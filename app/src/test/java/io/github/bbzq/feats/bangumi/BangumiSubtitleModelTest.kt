@@ -1,5 +1,6 @@
 package io.github.bbzq.feats.bangumi
 
+import com.google.protobuf.ByteString
 import io.github.bbzq.proto.DmViewReply
 import io.github.bbzq.proto.SubtitleItem
 import io.github.bbzq.proto.VideoSubtitle
@@ -22,6 +23,34 @@ class BangumiSubtitleModelTest {
 
         assertTrue(BangumiSubtitleModel.hasSubtitleTrack(withTrack.toByteArray()))
         assertFalse(BangumiSubtitleModel.hasSubtitleTrack(DmViewReply.getDefaultInstance().toByteArray()))
+    }
+
+    @Test
+    fun `merges external subtitle into original reply without dropping other fields`() {
+        val original = DmViewReply.newBuilder()
+            .setClosed(true)
+            .setMask(ByteString.copyFrom(byteArrayOf(1, 2, 3)))
+            .build()
+        val external = reply(track(10, "zh-Hant", "繁體中文", "https://example.com/subtitle.json"))
+
+        // Field 10 is intentionally absent from the local schema. It must survive
+        // the merge so newer host reply fields are not discarded.
+        val originalBytes = original.toByteArray() + byteArrayOf(0x50, 0x7B)
+        val mergedBytes = requireNotNull(BangumiSubtitleModel.mergeSubtitleTrack(originalBytes, external.toByteArray()))
+        val merged = DmViewReply.parseFrom(mergedBytes)
+
+        assertTrue(merged.closed)
+        assertEquals(ByteString.copyFrom(byteArrayOf(1, 2, 3)), merged.mask)
+        assertEquals(external.subtitle, merged.subtitle)
+        assertTrue(mergedBytes.toList().windowed(2).any { it == listOf(0x50.toByte(), 0x7B.toByte()) })
+    }
+
+    @Test
+    fun `does not replace an existing subtitle track`() {
+        val original = reply(track(1, "zh-Hant", "繁體中文", "https://example.com/original.json"))
+        val external = reply(track(2, "zh-Hant", "繁體中文", "https://example.com/external.json"))
+
+        assertNull(BangumiSubtitleModel.mergeSubtitleTrack(original.toByteArray(), external.toByteArray()))
     }
 
     @Test
