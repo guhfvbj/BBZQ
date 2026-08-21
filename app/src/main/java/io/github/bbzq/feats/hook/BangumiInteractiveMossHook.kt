@@ -129,11 +129,17 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     private fun requestFallback(request: Any, original: Any, entry: Entry): Any? {
         val bytes = request.callMethod("toByteArray") as? ByteArray ?: return null
-        val epId = request.number("getEpId", "getEpisodeId", "getAid", "getOid", "getObjectId")
-        val cid = request.number("getCid", "getContentId")
+        // dmView's oid is the content id, not an episode id. Keep it out of the
+        // episode lookup so that a known content-to-region mapping wins.
+        val epId = request.number("getEpId", "getEpisodeId", "getAid", "getObjectId")
+        val cid = if (entry.methodName == "dmView") {
+            request.number("getOid", "getCid", "getContentId")
+        } else {
+            request.number("getCid", "getContentId")
+        }
         val seasonId = request.number("getSeasonId", "getSeason")
-        val regions = BangumiRegionContext.candidates(epId, seasonId)
-        val attempts = ExecutorCompletionService<ByteArray?>(EXECUTOR)
+        val regions = BangumiRegionContext.candidates(epId, seasonId, cid)
+        val attempts = ExecutorCompletionService<FallbackResponse?>(EXECUTOR)
         val submitted = regions.mapNotNull { region ->
             val host = ModuleSettings.getBangumiServerHost(prefs, region) ?: return@mapNotNull null
             attempts.submit {
@@ -146,20 +152,25 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
                     credential = credential,
                     useHttps = ModuleSettings.isBangumiServerHttps(prefs, region),
                 )
-                if (result != null) {
-                    log("Interactive MOSS fallback succeeded: kind=${entry.methodName}, region=${region.name}, ep=$epId, cid=$cid")
-                }
-                result
+                val hasSubtitle = entry.methodName == "dmView" &&
+                    result?.let { BangumiSubtitleModel.hasSubtitleTrack(it) } == true
+                log(
+                    "Interactive MOSS fallback response: kind=${entry.methodName}, region=${region.name}, " +
+                        "bytes=${result?.size ?: 0}, subtitles=$hasSubtitle, ep=$epId, cid=$cid",
+                )
+                result?.let { FallbackResponse(region, it, hasSubtitle) }
             }
         }
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FALLBACK_TIMEOUT_MS)
         repeat(submitted.size) {
             val remaining = deadline - System.nanoTime()
             if (remaining <= 0L) return@repeat
-            val payload = runCatching { attempts.poll(remaining, TimeUnit.NANOSECONDS)?.get() }.getOrNull()
-            if (payload != null && payload.isNotEmpty()) {
+            val attempt = runCatching { attempts.poll(remaining, TimeUnit.NANOSECONDS)?.get() }.getOrNull() ?: return@repeat
+            if (attempt.payload.isEmpty()) return@repeat
+            if (entry.methodName == "dmView" && !attempt.hasSubtitle) return@repeat
+            parseHostResponse(original.javaClass, attempt.payload)?.let { replacement ->
                 submitted.forEach { it.cancel(true) }
-                return parseHostResponse(original.javaClass, payload)
+                return replacement
             }
         }
         submitted.forEach { it.cancel(true) }
@@ -297,6 +308,12 @@ class BangumiInteractiveMossHook(env: RoamingEnv) : BaseRoamingHook(env) {
         }
 
     private data class Entry(val method: Method, val service: String, val methodName: String)
+
+    private data class FallbackResponse(
+        val region: BangumiRegion,
+        val payload: ByteArray,
+        val hasSubtitle: Boolean,
+    )
 
     private companion object {
         val EXECUTOR = Executors.newFixedThreadPool(3) { task ->

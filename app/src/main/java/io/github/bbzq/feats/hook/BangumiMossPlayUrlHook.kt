@@ -282,7 +282,11 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         val requestedEpisode = reference?.let { Episode(it.episodeId, it.cid) } ?: Episode(epId, cid)
         val requestedSeasonId = seasonId.takeIf { it != 0L } ?: reference?.seasonId ?: 0L
         val completion = ExecutorCompletionService<ParserAttempt>(REGION_EXECUTOR)
-        val submitted = BangumiRegionContext.candidates(requestedEpisode.id, requestedSeasonId).mapNotNull { region ->
+        val submitted = BangumiRegionContext.candidates(
+            requestedEpisode.id,
+            requestedSeasonId,
+            requestedEpisode.cid,
+        ).mapNotNull { region ->
             val host = ModuleSettings.getBangumiServerHost(prefs, region) ?: return@mapNotNull null
             completion.submit {
                 val lookupMovie = region == io.github.bbzq.BangumiRegion.INTL && reference?.isMovie == true

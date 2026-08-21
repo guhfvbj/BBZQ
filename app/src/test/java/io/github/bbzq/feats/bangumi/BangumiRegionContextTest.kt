@@ -80,4 +80,23 @@ class BangumiRegionContextTest {
         BangumiRegionContext.prepareDmView(99999999L)
         assertEquals(null, BangumiRegionContext.consumeDmViewRegion())
     }
+
+    @Test
+    fun `prioritizes content region before episode and season mappings`() {
+        BangumiRegionContext.recordEpisodeReference(
+            episodeId = "97101",
+            cid = "97201",
+            seasonId = "97301",
+            region = BangumiRegion.INTL,
+            isMovie = false,
+        )
+        BangumiRegionContext.recordEpisode("97101", BangumiRegion.HK)
+        BangumiRegionContext.recordSeason("97301", BangumiRegion.TW)
+
+        val candidates = BangumiRegionContext.candidates(97101L, 97301L, 97201L)
+
+        assertEquals(BangumiRegion.INTL, candidates[0])
+        assertEquals(BangumiRegion.HK, candidates[1])
+        assertEquals(BangumiRegion.TW, candidates[2])
+    }
 }

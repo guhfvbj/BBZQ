@@ -63,8 +63,9 @@ internal object BangumiRegionContext {
         activeRegion.set(ActiveRegion(region, System.currentTimeMillis() + ACTIVE_REGION_TTL_MS))
     }
 
-    fun candidates(epId: Long, seasonId: Long): List<BangumiRegion> {
+    fun candidates(epId: Long, seasonId: Long, contentId: Long = 0L): List<BangumiRegion> {
         val known = listOfNotNull(
+            contentRegion(contentId),
             episodeRegion(epId),
             seasonRegion(seasonId),
             currentActiveRegion(),
