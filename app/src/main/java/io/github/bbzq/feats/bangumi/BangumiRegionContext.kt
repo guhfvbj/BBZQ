@@ -12,6 +12,7 @@ internal object BangumiRegionContext {
     private val seasonRegions = ConcurrentHashMap<String, BangumiRegion>()
     private val contentRegions = ConcurrentHashMap<String, BangumiRegion>()
     private val episodeReferences = ConcurrentHashMap<String, EpisodeReference>()
+    private val contentReferences = ConcurrentHashMap<String, EpisodeReference>()
     private val activeRegion = AtomicReference<ActiveRegion?>(null)
     private val pendingDmViewRegion = AtomicReference<ActiveRegion?>(null)
 
@@ -33,12 +34,15 @@ internal object BangumiRegionContext {
         episodeRegions[episode.toString()] = region
         contentRegions[content.toString()] = region
         episodeReferences[episode.toString()] = reference
+        contentReferences[content.toString()] = reference
         if (season != 0L) seasonRegions[season.toString()] = region
     }
 
     fun referenceFor(episodeId: Long, cid: Long, seasonId: Long): EpisodeReference? {
         val direct = episodeId.takeIf { it != 0L }?.let { episodeReferences[it.toString()] }
         if (direct != null) return direct
+        val content = cid.takeIf { it != 0L }?.let { contentReferences[it.toString()] }
+        if (content != null) return content
         return seasonId.takeIf { it != 0L }
             ?.let { season -> episodeReferences.values.firstOrNull { it.seasonId == season } }
     }

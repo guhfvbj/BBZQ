@@ -119,6 +119,13 @@ message PlayViewUniteReq {
   map<string, string> extra_content = 4;
 }
 
+// The DmView request only needs pid/oid locally. Unknown fields preserve the
+// host app's additional request parameters when pid is filled in.
+message DmViewRequest {
+  optional int64 pid = 1;
+  optional int64 oid = 2;
+}
+
 message SubtitleUserInfo {}
 
 message SubtitleItem {

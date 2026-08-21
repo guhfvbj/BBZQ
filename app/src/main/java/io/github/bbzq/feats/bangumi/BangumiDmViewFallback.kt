@@ -6,6 +6,7 @@ import io.github.bbzq.BangumiRegion
 import io.github.bbzq.BangumiServerCredential
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.callMethod
+import io.github.bbzq.proto.DmViewRequest
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -32,15 +33,36 @@ internal object BangumiDmViewFallback {
         source: String,
         log: (String) -> Unit,
     ): Response? {
-        val body = request.callMethod("toByteArray") as? ByteArray ?: return null
-        val epId = request.number("getEpId", "getEpisodeId", "getAid", "getObjectId")
-        val contentId = if (methodName == "dmView") {
+        val originalBody = request.callMethod("toByteArray") as? ByteArray ?: return null
+        val parsedDmView = if (methodName == "dmView") {
+            runCatching { DmViewRequest.parseFrom(originalBody) }.getOrNull()
+        } else {
+            null
+        }
+        val reflectedEpisodeId = request.number("getEpId", "getEpisodeId", "getAid", "getObjectId")
+        val reflectedContentId = if (methodName == "dmView") {
             request.number("getOid", "getCid", "getContentId")
         } else {
             request.number("getCid", "getContentId")
         }
+        val epId = if (parsedDmView != null) {
+            parsedDmView.pid.takeIf { it > 0L } ?: 0L
+        } else {
+            reflectedEpisodeId
+        }
+        val contentId = parsedDmView?.oid?.takeIf { it > 0L } ?: reflectedContentId
         val seasonId = request.number("getSeasonId", "getSeason")
-        val regions = BangumiRegionContext.candidates(epId, seasonId, contentId)
+        val reference = BangumiRegionContext.referenceFor(epId, contentId, seasonId)
+        val effectiveEpisodeId = if (epId == 0L) reference?.episodeId ?: 0L else epId
+        val effectiveSeasonId = seasonId.takeIf { it > 0L } ?: reference?.seasonId ?: 0L
+        val augmentedBody = if (methodName == "dmView" && epId == 0L) {
+            reference?.episodeId?.let { augmentDmViewRequest(originalBody, it) }
+        } else {
+            null
+        }
+        val body = augmentedBody ?: originalBody
+        val augmented = augmentedBody != null
+        val regions = BangumiRegionContext.candidates(effectiveEpisodeId, effectiveSeasonId, contentId)
         val attempts = ExecutorCompletionService<Response?>(executor)
         val submitted = regions.mapNotNull { region ->
             val host = ModuleSettings.getBangumiServerHost(prefs, region) ?: return@mapNotNull null
@@ -58,7 +80,8 @@ internal object BangumiDmViewFallback {
                 log(
                     "Bangumi DmView fallback: source=$source, region=${region.name}, " +
                         "requestBytes=${body.size}, responseBytes=${result?.size ?: 0}, " +
-                        "subtitles=$hasSubtitle, ep=$epId, cid=$contentId",
+                        "subtitles=$hasSubtitle, rawPid=$epId, effectivePid=$effectiveEpisodeId, " +
+                        "cid=$contentId, augmented=$augmented",
                 )
                 result?.let { Response(region, it, hasSubtitle) }
             }
@@ -83,6 +106,13 @@ internal object BangumiDmViewFallback {
     private fun parserCredential(prefs: SharedPreferences, region: BangumiRegion): BangumiServerCredential? =
         ModuleSettings.getBangumiServerCredential(prefs, region)
             ?: AccessKeyRepository.read(prefs)?.let { BangumiServerCredential(it, region.defaultPlatform) }
+
+    internal fun augmentDmViewRequest(body: ByteArray, episodeId: Long): ByteArray? {
+        if (episodeId <= 0L) return null
+        val request = runCatching { DmViewRequest.parseFrom(body) }.getOrNull() ?: return null
+        if (request.pid != 0L) return null
+        return request.toBuilder().setPid(episodeId).build().toByteArray()
+    }
 
     private fun Any.number(vararg names: String): Long = names.firstNotNullOfOrNull { name ->
         callMethod(name)?.let { it as? Number }?.toLong()?.takeIf { it != 0L }

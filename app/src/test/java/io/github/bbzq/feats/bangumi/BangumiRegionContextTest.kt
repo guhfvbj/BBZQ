@@ -25,6 +25,22 @@ class BangumiRegionContextTest {
     }
 
     @Test
+    fun `resolves episode reference from dm view content id`() {
+        BangumiRegionContext.recordEpisodeReference(
+            episodeId = "9202",
+            cid = "7202",
+            seasonId = "9200",
+            region = BangumiRegion.TW,
+            isMovie = false,
+        )
+
+        val reference = BangumiRegionContext.referenceFor(0, 7202, 0)
+        assertEquals(BangumiRegion.TW, reference?.region)
+        assertEquals(9202L, reference?.episodeId)
+        assertEquals(7202L, reference?.cid)
+    }
+
+    @Test
     fun `rewrites only international playback query with known reference`() {
         BangumiRegionContext.recordEpisodeReference(
             episodeId = "9102",
