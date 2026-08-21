@@ -30,6 +30,7 @@ class BangumiDmViewRequestTest {
         val request = DmViewRequest.newBuilder()
             .setPid(757987L)
             .setOid(1186996969L)
+            .setType(1)
             .build()
 
         assertNull(BangumiDmViewFallback.augmentDmViewRequest(request.toByteArray(), 757987L))
@@ -89,5 +90,30 @@ class BangumiDmViewRequestTest {
 
         assertEquals(990701L, result.pid)
         assertEquals(991301L, result.oid)
+    }
+
+    @Test
+    fun `adds dmview type required for subtitle metadata`() {
+        val original = DmViewRequest.newBuilder()
+            .setPid(117069517492482L)
+            .setOid(40770340494L)
+            .build()
+
+        val augmented = BangumiDmViewFallback.augmentDmViewRequest(original.toByteArray(), 990701L, 991301L)
+            ?: error("request was not augmented")
+        val result = DmViewRequest.parseFrom(augmented)
+
+        assertEquals(1, result.type)
+    }
+
+    @Test
+    fun `does not rewrite a complete dmview request`() {
+        val request = DmViewRequest.newBuilder()
+            .setPid(757987L)
+            .setOid(1186996969L)
+            .setType(1)
+            .build()
+
+        assertNull(BangumiDmViewFallback.augmentDmViewRequest(request.toByteArray(), 757987L, 1186996969L))
     }
 }

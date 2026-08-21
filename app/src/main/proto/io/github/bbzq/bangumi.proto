@@ -124,6 +124,12 @@ message PlayViewUniteReq {
 message DmViewRequest {
   optional int64 pid = 1;
   optional int64 oid = 2;
+  // Bilibili's DmView endpoint requires type=1 for the PGC subtitle view.
+  // Keep the remaining request fields declared so augmentation can fill a
+  // missing default without discarding the host request's unknown fields.
+  optional int32 type = 3;
+  optional string spmid = 4;
+  optional int32 is_hard_boot = 5;
 }
 
 message SubtitleUserInfo {}

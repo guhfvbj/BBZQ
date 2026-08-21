@@ -129,10 +129,22 @@ internal object BangumiDmViewFallback {
     internal fun augmentDmViewRequest(body: ByteArray, episodeId: Long, cid: Long): ByteArray? {
         if (episodeId <= 0L || cid < 0L) return null
         val request = runCatching { DmViewRequest.parseFrom(body) }.getOrNull() ?: return null
-        if (request.pid == episodeId && (cid == 0L || request.oid == cid)) return null
-        val builder = request.toBuilder().setPid(episodeId)
+        val builder = request.toBuilder()
+        var changed = false
+        if (request.pid != episodeId) {
+            builder.setPid(episodeId)
+            changed = true
+        }
         if (cid > 0L) builder.setOid(cid)
-        return builder.build().toByteArray()
+        if (cid > 0L && request.oid != cid) changed = true
+        // DmView silently omits the subtitle block when type is absent. The
+        // host often sends a zero-valued request for unlocked PGC playback,
+        // so normalize it before forwarding to the regional endpoint.
+        if (request.type == 0) {
+            builder.setType(1)
+            changed = true
+        }
+        return if (changed) builder.build().toByteArray() else null
     }
 
     private fun Any.number(vararg names: String): Long = names.firstNotNullOfOrNull { name ->
