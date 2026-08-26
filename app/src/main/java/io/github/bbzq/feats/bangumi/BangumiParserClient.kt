@@ -2,9 +2,11 @@ package io.github.bbzq.feats.bangumi
 
 import io.github.bbzq.BangumiRegion
 import io.github.bbzq.BangumiServerCredential
+import io.github.bbzq.BuildConfig
 import io.github.bbzq.ModuleSettings
 import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URLEncoder
 import java.net.URL
 import java.nio.charset.StandardCharsets
@@ -13,6 +15,8 @@ import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 import java.security.cert.CertificateFactory
+import java.util.zip.GZIPInputStream
+import java.util.zip.InflaterInputStream
 
 /** Direct client for servers compatible with BiliRoaming's regional parser protocol. */
 internal object BangumiParserClient {
@@ -21,12 +25,28 @@ internal object BangumiParserClient {
     // app identity is omitted. This is also the identity used by the host app.
     private const val MAIN_APP_KEY = "1d8b6e7d45233436"
     private const val MAIN_BUILD = "9060300"
+    private const val MAIN_WEB_SEASON_PATH = "/pgc/view/web/season"
 
     data class Result(
         val body: String?,
         val error: String? = null,
+        val httpStatus: Int? = null,
+        val contentType: String? = null,
+        val byteSize: Int? = null,
+        val isJson: Boolean = false,
+        val isHtml: Boolean = false,
+        val businessCode: Long? = null,
+        val businessMessage: String? = null,
     ) {
         val isSuccess: Boolean get() = body?.contains(Regex("\"code\"\\s*:\\s*0\\b")) == true
+
+        val businessError: String?
+            get() = businessCode?.takeIf { it != 0L }?.let { code ->
+                val message = businessMessage
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { io.github.bbzq.ModuleDebugLog.sanitize(it).take(160) }
+                "code=$code${message?.let { ", message=$it" }.orEmpty()}"
+            }
     }
 
     data class ProbeResult(val message: String)
@@ -45,13 +65,16 @@ internal object BangumiParserClient {
         useHttps: Boolean = true,
     ): Result {
         val params = LinkedHashMap(query)
-        params["area"] = region.name.lowercase()
+        if (region == BangumiRegion.INTL) params.remove("area") else params["area"] = region.name.lowercase()
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
-        if (region == BangumiRegion.TH) {
+        if (region == BangumiRegion.INTL) {
             params.putIfAbsent("appkey", "7d089525d3611b1c")
             params.putIfAbsent("build", "1001310")
             params.putIfAbsent("mobi_app", "bstar_a")
             params.putIfAbsent("platform", "android")
+            params.putIfAbsent("s_locale", "zh_SG")
+            params.putIfAbsent("c_locale", "zh_SG")
+            params.putIfAbsent("lang", "hans")
         } else {
             params.putIfAbsent("appkey", MAIN_APP_KEY)
             params.putIfAbsent("build", MAIN_BUILD)
@@ -70,8 +93,9 @@ internal object BangumiParserClient {
         useHttps: Boolean = true,
     ): Result {
         val params = LinkedHashMap(query)
-        val path = if (region == BangumiRegion.TH) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
-        if (region == BangumiRegion.TH) {
+        val path = if (region == BangumiRegion.INTL) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
+        if (region == BangumiRegion.INTL) {
+            params["type"] = internationalSearchType(params["type"])
             params.putAll(mapOf(
                 "appkey" to "7d089525d3611b1c",
                 "build" to "1001310",
@@ -97,9 +121,27 @@ internal object BangumiParserClient {
         classLoader: ClassLoader,
         useHttps: Boolean = true,
     ): Result {
+        // The APP season endpoint intermittently stalls for otherwise valid
+        // regional titles. The web endpoint returns the same episode ids/cids
+        // and is the reliable metadata source needed by the playback fallback.
+        if (region != BangumiRegion.INTL) {
+            val webParams = LinkedHashMap(query).apply {
+                credential?.accessKey?.takeIf(String::isNotBlank)?.let { put("access_key", it) }
+                put("area", region.name.lowercase())
+            }
+            val webResult = request(
+                host,
+                MAIN_WEB_SEASON_PATH,
+                encode(webParams),
+                credential?.platform ?: region.defaultPlatform,
+                useHttps,
+            )
+            if (isUsableSeasonResult(webResult)) return webResult
+        }
+
         val params = LinkedHashMap(query)
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
-        val path = if (region == BangumiRegion.TH) {
+        val path = if (region == BangumiRegion.INTL) {
             params.putIfAbsent("mobi_app", "bstar_a")
             params.putIfAbsent("build", "1001310")
             params.putIfAbsent("s_locale", "zh_SG")
@@ -115,6 +157,10 @@ internal object BangumiParserClient {
         return request(host, path, sign(params, classLoader), credential?.platform ?: region.defaultPlatform, useHttps)
     }
 
+    internal fun isUsableSeasonResult(result: Result): Boolean =
+        result.body != null && result.isJson && result.isSuccess &&
+            (result.businessCode == null || result.businessCode == 0L)
+
     fun buildPlayUrl(
         region: BangumiRegion,
         host: String,
@@ -124,13 +170,16 @@ internal object BangumiParserClient {
         useHttps: Boolean = true,
     ): String {
         val params = LinkedHashMap(query)
-        params["area"] = region.name.lowercase()
+        if (region == BangumiRegion.INTL) params.remove("area") else params["area"] = region.name.lowercase()
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
-        if (region == BangumiRegion.TH) {
+        if (region == BangumiRegion.INTL) {
             params.putIfAbsent("appkey", "7d089525d3611b1c")
             params.putIfAbsent("build", "1001310")
             params.putIfAbsent("mobi_app", "bstar_a")
             params.putIfAbsent("platform", "android")
+            params.putIfAbsent("s_locale", "zh_SG")
+            params.putIfAbsent("c_locale", "zh_SG")
+            params.putIfAbsent("lang", "hans")
         }
         return buildUrl(host, region.playUrlPath, sign(params, classLoader), useHttps)
     }
@@ -144,9 +193,9 @@ internal object BangumiParserClient {
         useHttps: Boolean = true,
     ): String {
         val params = LinkedHashMap(query)
-        val path = if (region == BangumiRegion.TH) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
-        params["type"] = "7"
-        if (region == BangumiRegion.TH) {
+        val path = if (region == BangumiRegion.INTL) "/intl/gateway/v2/app/search/type" else "/x/v2/search/type"
+        if (region == BangumiRegion.INTL) {
+            params["type"] = internationalSearchType(params["type"])
             params.putAll(mapOf("appkey" to "7d089525d3611b1c", "build" to "1001310", "mobi_app" to "bstar_a", "platform" to "android", "s_locale" to "zh_SG", "c_locale" to "zh_SG", "lang" to "hans"))
         } else {
             params["area"] = region.name.lowercase()
@@ -155,6 +204,9 @@ internal object BangumiParserClient {
         credential?.accessKey?.takeIf(String::isNotBlank)?.let { params["access_key"] = it }
         return buildUrl(host, path, sign(params, classLoader), useHttps)
     }
+
+    internal fun internationalSearchType(type: String?): String =
+        if (type == SYNTHETIC_INTERNATIONAL_MOVIE_TYPE) INTERNATIONAL_MOVIE_TYPE else type ?: INTERNATIONAL_MOVIE_TYPE
 
     fun buildSeasonUrl(
         region: BangumiRegion,
@@ -166,7 +218,7 @@ internal object BangumiParserClient {
     ): String {
         val params = LinkedHashMap(query).apply {
             credential?.accessKey?.takeIf(String::isNotBlank)?.let { put("access_key", it) }
-            if (region == BangumiRegion.TH) {
+            if (region == BangumiRegion.INTL) {
                 putIfAbsent("mobi_app", "bstar_a")
                 putIfAbsent("build", "1001310")
                 putIfAbsent("s_locale", "zh_SG")
@@ -175,7 +227,7 @@ internal object BangumiParserClient {
                 putIfAbsent("build", "6400000")
             }
         }
-        val path = if (region == BangumiRegion.TH) {
+        val path = if (region == BangumiRegion.INTL) {
             "/intl/gateway/v2/ogv/view/app/season"
         } else {
             "/pgc/view/v2/app/season"
@@ -197,6 +249,64 @@ internal object BangumiParserClient {
             putIfAbsent("s_locale", "zh_SG")
         }
         return buildUrl(host, "/intl/gateway/v2/app/subtitle", sign(params, classLoader), useHttps)
+    }
+
+    /** Keeps the host client's protobuf request and lets the parser proxy only its transport. */
+    fun buildGrpcProxyUrl(host: String, original: URI, useHttps: Boolean): String =
+        buildUrl(host, original.rawPath.orEmpty(), original.rawQuery.orEmpty(), useHttps)
+
+    /** Sends an installed-host protobuf request through the regional parser. */
+    fun requestGrpc(
+        host: String,
+        service: String,
+        method: String,
+        body: ByteArray,
+        credential: BangumiServerCredential?,
+        useHttps: Boolean,
+    ): ByteArray? = runCatching {
+        val url = URL(buildUrl(host, "/$service/$method", "", useHttps))
+        (url.openConnection() as HttpURLConnection).run {
+            configureDirectIpTls(this, host)
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = TIMEOUT_MS
+            readTimeout = TIMEOUT_MS
+            setRequestProperty("Content-Type", "application/grpc+proto")
+            setRequestProperty("Accept", "application/grpc+proto, application/octet-stream")
+            setRequestProperty("Accept-Encoding", "gzip,deflate")
+            setRequestProperty("Build", BuildConfig.VERSION_CODE.toString())
+            setRequestProperty("x-from-bbzq", BuildConfig.RELEASE_NAME)
+            setRequestProperty("platform-from-bbzq", credential?.platform.orEmpty())
+            credential?.accessKey?.takeIf(String::isNotBlank)?.let {
+                setRequestProperty("Authorization", "identify_v1 $it")
+            }
+            outputStream.use { it.write(body) }
+            val code = responseCode
+            val stream = if (code in 200..299) inputStream else errorStream
+            val bytes = stream?.use { input ->
+                when (getHeaderField("Content-Encoding")?.lowercase().orEmpty()) {
+                    "gzip" -> GZIPInputStream(input).use { it.readBytes() }
+                    "deflate" -> InflaterInputStream(input).use { it.readBytes() }
+                    else -> input.readBytes()
+                }
+            }
+            disconnect()
+            if (code !in 200..299 || bytes == null || bytes.isEmpty()) null else unwrapGrpcPayload(bytes)
+        }
+    }.onFailure { /* Interactive features are best-effort and must not affect playback. */ }.getOrNull()
+
+    private fun unwrapGrpcPayload(bytes: ByteArray): ByteArray {
+        if (bytes.size < 5) return bytes
+        val length = ((bytes[1].toInt() and 0xff) shl 24) or
+            ((bytes[2].toInt() and 0xff) shl 16) or
+            ((bytes[3].toInt() and 0xff) shl 8) or
+            (bytes[4].toInt() and 0xff)
+        return if ((bytes[0].toInt() == 0 || bytes[0].toInt() == 1) && length in 0..bytes.size - 5) {
+            val payload = bytes.copyOfRange(5, 5 + length)
+            if (bytes[0].toInt() == 1) {
+                GZIPInputStream(payload.inputStream()).use { it.readBytes() }
+            } else payload
+        } else bytes
     }
 
     fun convertThailandPlayUrl(raw: String): String = runCatching {
@@ -243,7 +353,8 @@ internal object BangumiParserClient {
         }
         val required = buildSet {
             addAll(setOf("search", "season", "playurl"))
-            if (region == BangumiRegion.TH) add("subtitle")
+            if (region == BangumiRegion.INTL) add("subtitle")
+            if (region == BangumiRegion.HK || region == BangumiRegion.TW) add("grpc-dm-view")
         }
         if (declared != null && !declared.capabilities.containsAll(required)) {
             return ProbeResult("检查失败：服务器缺少${(required - declared.capabilities).joinToString("、")}接口")
@@ -255,7 +366,7 @@ internal object BangumiParserClient {
         if (declared != null) {
             return ProbeResult("BBZQ兼容检查通过：${region.label}服务器已声明所需接口")
         }
-        val params = if (region == BangumiRegion.TH) {
+        val params = if (region == BangumiRegion.INTL) {
             mapOf("ep_id" to "285145", "s_locale" to "zh_SG")
         } else {
             mapOf("cid" to "120453316", "ep_id" to "285145", "otype" to "json", "fnval" to "16", "module" to "pgc", "platform" to "android", "test" to "true")
@@ -322,17 +433,60 @@ internal object BangumiParserClient {
                 requestMethod = "GET"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS
-                setRequestProperty("Accept-Encoding", "identity")
+                // Match BiliRoaming's parser transport. The server forwards
+                // these non-secret headers to the international upstream.
+                setRequestProperty("Accept-Encoding", "gzip,deflate")
+                setRequestProperty("Build", BuildConfig.VERSION_CODE.toString())
+                setRequestProperty("x-from-bbzq", BuildConfig.RELEASE_NAME)
                 setRequestProperty("platform-from-bbzq", platform)
                 extraHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
                 val code = responseCode
+                val contentType = getHeaderField("Content-Type")
                 val stream = if (code in 200..299) inputStream else errorStream
-                val body = stream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }
+                val encoding = getHeaderField("Content-Encoding")?.lowercase().orEmpty()
+                val bytes = stream?.use {
+                    when {
+                        encoding.contains("gzip") -> GZIPInputStream(it).use { gzip -> gzip.readBytes() }
+                        encoding.contains("deflate") -> InflaterInputStream(it).use { deflate -> deflate.readBytes() }
+                        else -> it.readBytes()
+                    }
+                }
+                val body = bytes?.toString(StandardCharsets.UTF_8)
+                val trimmed = body?.trimStart().orEmpty()
+                val isHtml = contentType?.contains("html", ignoreCase = true) == true ||
+                    trimmed.startsWith("<!doctype html", ignoreCase = true) ||
+                    trimmed.startsWith("<html", ignoreCase = true)
+                val isJson = contentType?.contains("json", ignoreCase = true) == true ||
+                    trimmed.startsWith("{") || trimmed.startsWith("[")
+                val error = when {
+                    code !in 200..299 -> "HTTP $code${safePreview(body)?.let { ": $it" }.orEmpty()}"
+                    !isJson -> "HTTP $code non-JSON response${contentType?.let { " ($it)" }.orEmpty()}, bytes=${bytes?.size ?: 0}${safePreview(body)?.let { ", preview=$it" }.orEmpty()}"
+                    else -> null
+                }
+                val json = if (isJson) runCatching { org.json.JSONObject(trimmed) }.getOrNull() else null
+                val businessCode = json?.takeIf { it.has("code") }?.optLong("code")
+                val businessMessage = json?.optString("message")?.takeIf(String::isNotBlank)
                 disconnect()
-                if (body == null) Result(null, "HTTP $code") else Result(body, if (code in 200..299) null else "HTTP $code")
+                Result(
+                    body = body,
+                    error = error,
+                    httpStatus = code,
+                    contentType = contentType,
+                    byteSize = bytes?.size,
+                    isJson = isJson,
+                    isHtml = isHtml,
+                    businessCode = businessCode,
+                    businessMessage = businessMessage,
+                )
             }
         }.getOrElse { Result(null, it.message ?: it.javaClass.simpleName) }
     }
+
+    private fun safePreview(body: String?): String? = body
+        ?.replace(Regex("\\s+"), " ")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let { io.github.bbzq.ModuleDebugLog.sanitize(it).take(160) }
 
     /**
      * The regional parser can be reached directly while the Cloudflare origin
@@ -363,6 +517,8 @@ internal object BangumiParserClient {
     }
 
     private const val DIRECT_PARSER_IP = "47.98.174.251"
+    private const val SYNTHETIC_INTERNATIONAL_MOVIE_TYPE = "1920"
+    private const val INTERNATIONAL_MOVIE_TYPE = "8"
 
     private val DIRECT_PARSER_CERTIFICATE = """
             -----BEGIN CERTIFICATE-----

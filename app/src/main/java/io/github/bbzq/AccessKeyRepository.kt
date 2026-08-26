@@ -5,6 +5,8 @@ import android.content.SharedPreferences
 object AccessKeyRepository {
     @Volatile
     private var liveReader: (() -> String?)? = null
+    private val captureLock = Any()
+    private var capturedAccessKey: String? = null
 
     fun register(reader: () -> String?) {
         liveReader = reader
@@ -25,9 +27,18 @@ object AccessKeyRepository {
     /** Cache a credential observed on an already-authenticated host request. */
     fun capture(prefs: SharedPreferences, value: String?): Boolean {
         val accessKey = value?.takeIf(::looksLikeAccessKey) ?: return false
-        if (prefs.getString(ModuleSettings.KEY_LAST_ACCESS_KEY, null) == accessKey) return false
-        prefs.edit().putString(ModuleSettings.KEY_LAST_ACCESS_KEY, accessKey).apply()
-        return true
+        return synchronized(captureLock) {
+            if (capturedAccessKey == accessKey ||
+                prefs.getString(ModuleSettings.KEY_LAST_ACCESS_KEY, null) == accessKey
+            ) {
+                capturedAccessKey = accessKey
+                false
+            } else {
+                prefs.edit().putString(ModuleSettings.KEY_LAST_ACCESS_KEY, accessKey).apply()
+                capturedAccessKey = accessKey
+                true
+            }
+        }
     }
 
     fun looksLikeAccessKey(value: String): Boolean =

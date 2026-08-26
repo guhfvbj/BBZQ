@@ -18,18 +18,21 @@ class BangumiHomeTabsTest {
             listOf(
                 "bilibili://pegasus/promo",
                 "bilibili://following/home_activity_tab/6544",
-                "bilibili://browser?url=https%3A%2F%2Fwww.bilibili.tv%2Fzh-Hans",
+                "bilibili://following/home_activity_tab/168644",
             ),
             result.map { it?.uri },
         )
-        assertEquals(listOf(null, 60, 70), result.map { it?.position })
+        assertEquals(listOf(null, "60", "80"), result.map { it?.id })
+        assertEquals(listOf(null, "番剧（港澳台）", "影视（国际）"), result.map { it?.title })
+        assertEquals(listOf(null, 60, 80), result.map { it?.position })
+        assertEquals(listOf(null, "bangumi", "jptv"), result.map { it?.reporterId })
     }
 
     @Test
     fun `recognizes existing tabs and does not duplicate them`() {
         val original = listOf(
             TestTab("bilibili://following/home_activity_tab/6544"),
-            TestTab("bilibili://browser?url=https%3A%2F%2Fwww.bilibili.tv%2Fzh-Hans"),
+            TestTab("bilibili://following/home_activity_tab/168644"),
         )
 
         val result = BangumiHomeTabs.appendMissing(original, TestTab::uri) { spec ->
@@ -37,6 +40,14 @@ class BangumiHomeTabsTest {
         }
 
         assertEquals(original, result)
+    }
+
+    @Test
+    fun `recognizes the legacy international web entry for migration`() {
+        assertEquals(
+            "影视（国际）",
+            BangumiHomeTabs.forExistingUri("https://www.bilibili.tv/zh-Hans")?.title,
+        )
     }
 
     @Test

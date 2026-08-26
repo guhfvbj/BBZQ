@@ -105,6 +105,15 @@ class HomeRecommendTabHook(env: RoamingEnv) : BaseRoamingHook(env) {
             return tabs
         }
 
+        tabs.filterNotNull().forEach { tab ->
+            val originalUri = tab.readString(symbols.uriField)
+            val spec = BangumiHomeTabs.forExistingUri(originalUri) ?: return@forEach
+            if (initializeBangumiTab(tab, tabClass, spec, symbols)) {
+                val action = if (originalUri == spec.uri) "normalized" else "migrated"
+                log("HomeRecommendTabs $action ${spec.describe()}: $originalUri -> ${spec.uri}")
+            }
+        }
+
         return BangumiHomeTabs.appendMissing(
             existing = tabs,
             uriOf = { item -> item.readString(symbols.uriField) },
@@ -114,18 +123,31 @@ class HomeRecommendTabHook(env: RoamingEnv) : BaseRoamingHook(env) {
                 logBangumiInjectionFailure("Unable to construct ${spec.title}")
                 return@appendMissing null
             }
-            runCatching {
-                symbols.idField.set(tab, spec.id)
-                symbols.titleField.set(tab, spec.title)
-                symbols.uriField.set(tab, spec.uri)
-                symbols.reporterIdField?.set(tab, spec.reporterId)
-                findPositionField(tabClass)?.setPosition(tab, spec.position)
+            if (initializeBangumiTab(tab, tabClass, spec, symbols)) {
+                log("HomeRecommendTabs injected ${spec.describe()}")
                 tab
-            }.onFailure {
-                logBangumiInjectionFailure("Unable to initialize ${spec.title}: ${it.javaClass.simpleName}")
-            }.getOrNull()
+            } else null
         }
     }
+
+    private fun BangumiHomeTabSpec.describe(): String =
+        "$title: id=$id, reporter=$reporterId, position=$position, uri=$uri"
+
+    private fun initializeBangumiTab(
+        tab: Any,
+        tabClass: Class<*>,
+        spec: BangumiHomeTabSpec,
+        symbols: RestoredHomeRecommendTabSymbols,
+    ): Boolean = runCatching {
+        symbols.idField.set(tab, spec.id)
+        symbols.titleField.set(tab, spec.title)
+        symbols.uriField.set(tab, spec.uri)
+        symbols.reporterIdField?.set(tab, spec.reporterId)
+        findPositionField(tabClass)?.setPosition(tab, spec.position)
+        true
+    }.onFailure {
+        logBangumiInjectionFailure("Unable to initialize ${spec.title}: ${it.javaClass.simpleName}")
+    }.getOrDefault(false)
 
     private fun logBangumiInjectionFailure(message: String) {
         if (bangumiInjectionFailureLogged) return

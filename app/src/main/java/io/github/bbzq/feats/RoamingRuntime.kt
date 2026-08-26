@@ -5,12 +5,16 @@ import android.content.ContextWrapper
 import android.content.SharedPreferences
 import android.content.res.AssetManager
 import android.content.res.Resources
+import io.github.bbzq.ModuleDebugLog
 import io.github.bbzq.ModuleSettingsBridge
+import io.github.bbzq.ModuleSettings
 import kotlin.LazyThreadSafetyMode
 import io.github.bbzq.feats.hook.BottomBarHook
 import io.github.bbzq.feats.hook.AutoLikeHook
 import io.github.bbzq.feats.hook.BangumiParserHook
+import io.github.bbzq.feats.hook.BangumiSearchMossHook
 import io.github.bbzq.feats.hook.BangumiMossPlayUrlHook
+import io.github.bbzq.feats.hook.BangumiInteractiveMossHook
 import io.github.bbzq.feats.hook.AccessKeyHook
 import io.github.bbzq.feats.hook.ChronosPromotionHook
 import io.github.bbzq.feats.hook.CustomThemeHook
@@ -103,6 +107,7 @@ object RoamingRuntime {
         }
 
         ModuleSettingsBridge.attach(env.hostContext, xposed)
+        ModuleSettings.migrateBangumiInternationalSettings(env.prefs)
         if (processScope == ProcessScope.MAIN) {
             HookUpdateChecker.check(env)
         }
@@ -145,7 +150,9 @@ object RoamingRuntime {
                 ::HomeRecommendAdHook,
                 ::HomeRecommendTabHook,
                 ::BangumiParserHook,
+                ::BangumiSearchMossHook,
                 ::BangumiMossPlayUrlHook,
+                ::BangumiInteractiveMossHook,
                 ::HomeRecommendPreloadHook,
                 ::DynamicPageHook,
                 ::HomeTopBarPurifyHook,
@@ -244,6 +251,7 @@ class RoamingEnv(
 
     fun log(message: String, throwable: Throwable? = null) {
         logger(message, throwable)
+        runCatching { ModuleDebugLog.append(prefs, message, throwable) }
     }
 
     companion object

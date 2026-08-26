@@ -89,7 +89,7 @@ export default function handler(_req: NextApiRequest, res: NextApiResponse) {
       region,
       capabilities: region === "th"
         ? ["search", "season", "playurl", "subtitle", "grpc-playurl-v1", "grpc-playurl-v2"]
-        : ["search", "season", "playurl", "grpc-playurl-v1", "grpc-playurl-v2"],
+        : ["search", "season", "playurl", "grpc-dm-view", "grpc-playurl-v1", "grpc-playurl-v2"],
     },
   });
 }
@@ -120,6 +120,12 @@ In `pages/api/legacy/grpc/[...path].ts`, add:
 The generic handler must preserve the request byte stream, gRPC headers, response headers,
 status, and response bytes. It only changes the upstream transport to `resinFetch`; it must not
 send MOSS traffic to legacy JSON endpoints.
+
+The HK and TW instances must also expose the existing
+`/bilibili.community.service.dm.v1.DM/DmView` rewrite and declare
+`grpc-dm-view`. A successful `DmView` response must contain bytes; convert an
+upstream HTTP 200 with an empty body to a 502 so the client can retain its
+original response instead of accepting an empty subtitle payload.
 
 ## Reverse proxy and acceptance
 

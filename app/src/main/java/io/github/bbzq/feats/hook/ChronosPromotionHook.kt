@@ -8,6 +8,8 @@ import io.github.bbzq.feats.allFields
 import io.github.bbzq.feats.allMethods
 import io.github.bbzq.feats.callMethod
 import io.github.bbzq.feats.callStaticMethod
+import io.github.bbzq.feats.bangumi.BangumiDmViewFallback
+import io.github.bbzq.feats.bangumi.BangumiSubtitleModel
 import io.github.bbzq.feats.hookAfter
 import io.github.bbzq.feats.hookBefore
 import io.github.bbzq.feats.isAssignableFromBoxed
@@ -19,6 +21,7 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.ArrayList
 import java.util.LinkedHashMap
+import java.util.concurrent.Executors
 
 class ChronosPromotionHook(env: RoamingEnv) : BaseRoamingHook(env) {
     private var blockedCount = 0
@@ -33,7 +36,9 @@ class ChronosPromotionHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     override fun startHook() {
         if (env.processName != env.packageName) return
-        if (!ModuleSettings.isBlockChronosPromotionEnabled(prefs)) {
+        val blockPromotions = ModuleSettings.isBlockChronosPromotionEnabled(prefs)
+        val addBangumi = ModuleSettings.isAddBangumiEnabled(prefs)
+        if (!blockPromotions && !addBangumi) {
             log("startHook: ChronosPromotion disabled, settings=${ModuleSettingsBridge.lastStatus}")
             return
         }
@@ -43,14 +48,18 @@ class ChronosPromotionHook(env: RoamingEnv) : BaseRoamingHook(env) {
             return
         }
 
-        val installed = installRpcReceiveHooks(symbols) +
-            installLocalGetViewProgressHook(symbols) +
-            installLocalDmViewHook(symbols) +
-            installRemoteHandlerHooks(symbols) +
-            installChronosMessageSenderHook(symbols) +
-            installAdDanmakuFeedHook(symbols) +
-            installInteractLayerViewProgressHook(symbols) +
-            installGeminiOperationWidgetHooks(symbols)
+        val installed = if (blockPromotions) {
+            installRpcReceiveHooks(symbols) +
+                installLocalGetViewProgressHook(symbols) +
+                installLocalDmViewHook(symbols, scrubPromotions = true, injectSubtitles = addBangumi) +
+                installRemoteHandlerHooks(symbols) +
+                installChronosMessageSenderHook(symbols) +
+                installAdDanmakuFeedHook(symbols) +
+                installInteractLayerViewProgressHook(symbols) +
+                installGeminiOperationWidgetHooks(symbols)
+        } else {
+            installLocalDmViewHook(symbols, scrubPromotions = false, injectSubtitles = true)
+        }
         if (installed == 0) {
             log("startHook: ChronosPromotion no hook point found")
         } else {
@@ -160,7 +169,11 @@ class ChronosPromotionHook(env: RoamingEnv) : BaseRoamingHook(env) {
         return methods.size
     }
 
-    private fun installLocalDmViewHook(symbols: RestoredChronosPromotionSymbols): Int {
+    private fun installLocalDmViewHook(
+        symbols: RestoredChronosPromotionSymbols,
+        scrubPromotions: Boolean,
+        injectSubtitles: Boolean,
+    ): Int {
         val requestType = symbols.clazz(CHRONOS_ID_GET_DM_VIEW_REQUEST)
         if (requestType == null) {
             log("startHook: ChronosPromotion GetDmView request missing")
@@ -186,7 +199,14 @@ class ChronosPromotionHook(env: RoamingEnv) : BaseRoamingHook(env) {
                     return@hookBefore
                 }
                 val callback = param.args.getOrNull(4) ?: return@hookBefore
-                val proxy = createLocalDmViewCallbackProxy(function2Type, callback, replyType) ?: return@hookBefore
+                val proxy = createLocalDmViewCallbackProxy(
+                    function2Type = function2Type,
+                    callback = callback,
+                    request = request,
+                    replyType = replyType,
+                    scrubPromotions = scrubPromotions,
+                    injectSubtitles = injectSubtitles,
+                ) ?: return@hookBefore
                 param.args[4] = proxy
             }
             log("startHook: ChronosPromotion local dm view at ${method.declaringClass.name}.${method.name}")
@@ -766,15 +786,45 @@ class ChronosPromotionHook(env: RoamingEnv) : BaseRoamingHook(env) {
     private fun createLocalDmViewCallbackProxy(
         function2Type: Class<*>,
         callback: Any,
+        request: Any?,
         replyType: Class<*>,
+        scrubPromotions: Boolean,
+        injectSubtitles: Boolean,
     ): Any? =
         runCatching {
             createFunction2Proxy(function2Type, callback, "LocalDmView") { invoke, callbackArgs ->
                 val response = callbackArgs.getOrNull(0)
                 val extra = callbackArgs.getOrNull(1)
-                val scrubbed = scrubDmViewExtra(extra, replyType)
+                val scrubbed = if (scrubPromotions) scrubDmViewExtra(extra, replyType) else ScrubbedExtra(null, 0)
                 if (scrubbed.removed > 0) logBlocked("localDmView:${scrubbed.removed}")
-                invoke.invoke(callback, response, scrubbed.extra ?: extra)
+                val deliveredExtra = scrubbed.extra ?: extra
+                val rawReply = deliveredExtra.replyBytes()
+                if (!injectSubtitles || request == null || rawReply == null || BangumiSubtitleModel.hasSubtitleTrack(rawReply)) {
+                    invoke.invoke(callback, response, deliveredExtra)
+                } else {
+                    SUBTITLE_EXECUTOR.execute {
+                        val fallback = BangumiDmViewFallback.request(
+                            request = request,
+                            prefs = prefs,
+                            source = "chronos",
+                        ) { message -> log(message) }
+                        val merged = fallback?.payload?.let { external ->
+                            BangumiSubtitleModel.mergeSubtitleTrack(rawReply, external)
+                        }
+                        log(
+                            "ChronosPromotion localDmView subtitle injection: " +
+                                "originalBytes=${rawReply.size}, externalBytes=${fallback?.payload?.size ?: 0}, " +
+                                "externalSubtitles=${fallback?.hasSubtitle == true}, injected=${merged != null}",
+                        )
+                        val finalExtra = merged?.let { bytes -> deliveredExtra.withReply(bytes) } ?: deliveredExtra
+                        runCatching { invoke.invoke(callback, response, finalExtra) }
+                            .onFailure { throwable ->
+                                val real = (throwable as? InvocationTargetException)?.targetException ?: throwable
+                                log("ChronosPromotion local dm view callback failed: ${real.message}", real)
+                            }
+                    }
+                    null
+                }
             }
         }.onFailure { throwable ->
             val count = ++localGetDmViewErrorCount
@@ -889,6 +939,16 @@ class ChronosPromotionHook(env: RoamingEnv) : BaseRoamingHook(env) {
             cleaned[key] = scrubbed.bytes
         }
         return if (changed) ScrubbedExtra(cleaned, removed) else ScrubbedExtra(null, 0)
+    }
+
+    private fun Any?.replyBytes(): ByteArray? = (this as? Map<*, *>)?.get("reply") as? ByteArray
+
+    private fun Any?.withReply(bytes: ByteArray): Any? {
+        val original = this as? Map<*, *> ?: return this
+        return LinkedHashMap<Any?, Any?>(original.size).apply {
+            putAll(original)
+            put("reply", bytes)
+        }
     }
 
     private fun scrubDmViewReplyBytes(replyType: Class<*>, bytes: ByteArray): ScrubbedBytes =
@@ -1351,6 +1411,9 @@ class ChronosPromotionHook(env: RoamingEnv) : BaseRoamingHook(env) {
     )
 
     private companion object {
+        private val SUBTITLE_EXECUTOR = Executors.newFixedThreadPool(2) { task ->
+            Thread(task, "BBZQ-ChronosSubtitle").apply { isDaemon = true }
+        }
         private const val CHRONOS_ID_RPC_HANDLER = "rpcHandler"
         private const val CHRONOS_ID_REMOTE_HANDLER = "remoteHandler"
         private const val CHRONOS_ID_MESSAGE_SENDER = "messageSender"

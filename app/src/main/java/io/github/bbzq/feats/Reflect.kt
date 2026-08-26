@@ -3,6 +3,7 @@
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.lang.reflect.Array as ReflectArray
 
 fun ClassLoader.findClassOrNull(name: String): Class<*>? =
     runCatching { Class.forName(name, false, this) }.getOrNull()
@@ -116,6 +117,41 @@ fun Class<*>.newInstanceOrNull(vararg args: Any?): Any? {
     }.getOrNull()
 }
 
+fun Class<*>.setStaticFieldOrNull(name: String, value: Any?): Boolean {
+    val field = allFields().firstOrNull { it.name == name } ?: return false
+    return runCatching {
+        field.isAccessible = true
+        field.set(null, value)
+        true
+    }.getOrDefault(false)
+}
+
+fun Class<*>.appendEnumConstantOrNull(name: String, vararg args: Any?): Boolean {
+    val valuesField = allFields().firstOrNull { it.name == "\$VALUES" } ?: return false
+    val current = runCatching { valuesField.get(null) as? Array<Any> }.getOrNull() ?: return false
+    if (current.any { (it as? Enum<*>)?.name == name }) return true
+    val constructor = declaredConstructors.asSequence()
+        .onEach { it.isAccessible = true }
+        .firstOrNull { candidate ->
+            val types = candidate.parameterTypes
+            types.size == args.size + 2 &&
+                types[0] == String::class.java &&
+                types[1] == Int::class.javaPrimitiveType &&
+                types.drop(2).indices.all { index -> types[index + 2].isAssignableFromBoxed(args[index]) }
+        } ?: return false
+    val constant = runCatching { constructor.newInstance(name, current.size, *args) }.getOrNull() ?: return false
+    val newValues = ReflectArray.newInstance(valuesField.type.componentType ?: return false, current.size + 1)
+    current.forEachIndexed { index, value -> ReflectArray.set(newValues, index, value) }
+    ReflectArray.set(newValues, current.size, constant)
+    return runCatching {
+        valuesField.set(null, newValues)
+        allFields().filter { it.name == "enumConstantDirectory" || it.name == "enumConstants" }.forEach {
+            runCatching { it.set(this, null) }
+        }
+        true
+    }.getOrDefault(false)
+}
+
 fun Class<*>.isAssignableFromBoxed(value: Any?): Boolean {
     if (value == null) return !isPrimitive
     if (isInstance(value)) return true
@@ -133,4 +169,3 @@ private fun Class<*>.primitiveWrapper(): Class<*>? = when (this) {
     Char::class.javaPrimitiveType -> Char::class.javaObjectType
     else -> null
 }
-

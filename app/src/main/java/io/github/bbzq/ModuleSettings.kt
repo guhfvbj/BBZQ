@@ -13,7 +13,7 @@ enum class BangumiRegion(
     CN("大陆", "bangumi_server_cn", "bangumi_server_cn_credential", "bangumi_server_cn_https", "android", "/pgc/player/api/playurl"),
     HK("港澳", "bangumi_server_hk", "bangumi_server_hk_credential", "bangumi_server_hk_https", "android", "/pgc/player/api/playurl"),
     TW("台湾", "bangumi_server_tw", "bangumi_server_tw_credential", "bangumi_server_tw_https", "android", "/pgc/player/api/playurl"),
-    TH("东南亚", "bangumi_server_th", "bangumi_server_th_credential", "bangumi_server_th_https", "bstar_a", "/intl/gateway/v2/ogv/playurl"),
+    INTL("国际", "bangumi_server_intl", "bangumi_server_intl_credential", "bangumi_server_intl_https", "bstar_a", "/intl/gateway/v2/ogv/playurl"),
 }
 
 data class BangumiServerCredential(
@@ -28,11 +28,14 @@ object ModuleSettings {
     const val KEY_BANGUMI_SERVER_CN = "bangumi_server_cn"
     const val KEY_BANGUMI_SERVER_HK = "bangumi_server_hk"
     const val KEY_BANGUMI_SERVER_TW = "bangumi_server_tw"
-    const val KEY_BANGUMI_SERVER_TH = "bangumi_server_th"
+    const val KEY_BANGUMI_SERVER_INTL = "bangumi_server_intl"
     const val KEY_BANGUMI_SERVER_CN_CREDENTIAL = "bangumi_server_cn_credential"
     const val KEY_BANGUMI_SERVER_HK_CREDENTIAL = "bangumi_server_hk_credential"
     const val KEY_BANGUMI_SERVER_TW_CREDENTIAL = "bangumi_server_tw_credential"
-    const val KEY_BANGUMI_SERVER_TH_CREDENTIAL = "bangumi_server_th_credential"
+    const val KEY_BANGUMI_SERVER_INTL_CREDENTIAL = "bangumi_server_intl_credential"
+    private const val LEGACY_BANGUMI_SERVER_TH = "bangumi_server_th"
+    private const val LEGACY_BANGUMI_SERVER_TH_CREDENTIAL = "bangumi_server_th_credential"
+    private const val LEGACY_BANGUMI_SERVER_TH_HTTPS = "bangumi_server_th_https"
     const val KEY_MINI_PROGRAM_ENABLED = "mini_program"
     const val KEY_PURIFY_SHARE_ENABLED = "purify_share"
     const val KEY_SKIP_REWARD_AD_ENABLED = "skip_reward_ad"
@@ -105,6 +108,7 @@ object ModuleSettings {
     const val KEY_FULL_NUMBER_FORMAT_ENABLED = "full_number_format_enabled"
     const val KEY_UNLOCK_COMMENT_GIF_ENABLED = "unlock_comment_gif_enabled"
     const val KEY_LAST_ACCESS_KEY = "last_access_key"
+    const val KEY_DEBUG_LOG_ENABLED = ModuleDebugLog.KEY_ENABLED
     const val KEY_HOST_ACCOUNT_UID = "host_account_uid"
     const val KEY_HOST_ACCOUNT_NAME = "host_account_name"
     const val KEY_HIDE_DESKTOP_ICON = "hide_desktop_icon"
@@ -691,6 +695,27 @@ object ModuleSettings {
 
     fun isAddBangumiEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_ADD_BANGUMI, false)
+
+    /** Migrates the former SEA parser settings once, without retaining the old runtime name. */
+    fun migrateBangumiInternationalSettings(prefs: SharedPreferences): Boolean {
+        if (prefs.contains(BangumiRegion.INTL.serverKey) ||
+            prefs.contains(BangumiRegion.INTL.credentialKey) ||
+            prefs.contains(BangumiRegion.INTL.httpsKey)
+        ) return false
+        val oldHost = prefs.getString(LEGACY_BANGUMI_SERVER_TH, null)
+        val oldCredential = prefs.getString(LEGACY_BANGUMI_SERVER_TH_CREDENTIAL, null)
+        val oldHttps = prefs.getBoolean(LEGACY_BANGUMI_SERVER_TH_HTTPS, true)
+        if (oldHost == null && oldCredential == null && !prefs.contains(LEGACY_BANGUMI_SERVER_TH_HTTPS)) return false
+        prefs.edit()
+            .putString(BangumiRegion.INTL.serverKey, oldHost)
+            .putString(BangumiRegion.INTL.credentialKey, oldCredential)
+            .putBoolean(BangumiRegion.INTL.httpsKey, oldHttps)
+            .remove(LEGACY_BANGUMI_SERVER_TH)
+            .remove(LEGACY_BANGUMI_SERVER_TH_CREDENTIAL)
+            .remove(LEGACY_BANGUMI_SERVER_TH_HTTPS)
+            .apply()
+        return true
+    }
 
     fun isBangumiSubtitleHantToHansEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_BANGUMI_SUBTITLE_HANT_TO_HANS_ENABLED, false)

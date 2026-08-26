@@ -7,6 +7,7 @@ internal data class BangumiHomeTabSpec(
     val reporterId: String,
     val position: Int,
     val existingUris: Set<String>,
+    val legacyUris: Set<String> = emptySet(),
 )
 
 internal object BangumiHomeTabs {
@@ -20,18 +21,24 @@ internal object BangumiHomeTabs {
             existingUris = setOf("bilibili://following/home_activity_tab/6544"),
         ),
         BangumiHomeTabSpec(
-            id = "70",
+            id = "80",
             title = "影视（国际）",
-            uri = "bilibili://browser?url=https%3A%2F%2Fwww.bilibili.tv%2Fzh-Hans",
-            reporterId = "bangumi",
-            position = 70,
-            existingUris = setOf(
+            uri = "bilibili://following/home_activity_tab/168644",
+            reporterId = "jptv",
+            position = 80,
+            existingUris = setOf("bilibili://following/home_activity_tab/168644"),
+            legacyUris = setOf(
                 "bilibili://browser?url=https%3A%2F%2Fwww.bilibili.tv%2Fzh-Hans",
                 "https://www.bilibili.tv/zh-Hans",
                 "https://www.bilibili.tv/zh-Hans/",
             ),
         ),
     )
+
+    fun forExistingUri(uri: String?): BangumiHomeTabSpec? =
+        specs.firstOrNull { spec ->
+            uri != null && (uri in spec.existingUris || uri in spec.legacyUris)
+        }
 
     fun <T : Any> appendMissing(
         existing: List<T?>,

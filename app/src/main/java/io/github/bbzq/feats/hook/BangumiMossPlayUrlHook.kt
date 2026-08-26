@@ -278,28 +278,59 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         epId: Long, seasonId: Long, cid: Long, qn: Long, fnver: Int, fnval: Int,
         forceHost: Int, fourk: Boolean,
     ): JSONObject? {
-        val requestedEpisode = Episode(epId, cid)
+        val reference = BangumiRegionContext.referenceFor(epId, cid, seasonId)
+        val requestedEpisode = reference?.let { Episode(it.episodeId, it.cid) } ?: Episode(epId, cid)
+        val requestedSeasonId = seasonId.takeIf { it != 0L } ?: reference?.seasonId ?: 0L
         val completion = ExecutorCompletionService<ParserAttempt>(REGION_EXECUTOR)
-        val submitted = BangumiRegionContext.candidates(epId, seasonId).mapNotNull { region ->
+        val submitted = BangumiRegionContext.candidates(
+            requestedEpisode.id,
+            requestedSeasonId,
+            requestedEpisode.cid,
+        ).mapNotNull { region ->
             val host = ModuleSettings.getBangumiServerHost(prefs, region) ?: return@mapNotNull null
             completion.submit {
-                val episode = resolveEpisode(region, host, seasonId, requestedEpisode) ?: requestedEpisode
-                if (episode.id == 0L || episode.cid == 0L) {
+                val lookupMovie = region == io.github.bbzq.BangumiRegion.INTL && reference?.isMovie == true
+                val canUseKnownEpisode = reference?.region == region
+                val seasonLookup = !canUseKnownEpisode || lookupMovie
+                val episode = resolveEpisode(
+                    region,
+                    host,
+                    requestedSeasonId,
+                    requestedEpisode,
+                    forceLookup = seasonLookup,
+                    fallback = requestedEpisode.takeIf { canUseKnownEpisode },
+                ) ?: requestedEpisode.takeIf { canUseKnownEpisode || requestedSeasonId == 0L }
+                if (episode == null || episode.id == 0L || episode.cid == 0L) {
                     log("Bangumi MOSS fallback skipped: region=${region.name}, missing ep/cid after season lookup")
-                    return@submit ParserAttempt(region, episode, null, "missing episode metadata")
+                    return@submit ParserAttempt(region, Episode(0L, 0L), null, "missing episode metadata")
                 }
                 val query = linkedMapOf(
                     "ep_id" to episode.id.toString(), "cid" to episode.cid.toString(), "qn" to qn.toString(),
                     "fnver" to fnver.toString(), "fnval" to fnval.toString(),
                     "force_host" to forceHost.toString(), "fourk" to if (fourk) "1" else "0",
                 )
-                log("Bangumi MOSS parser request: region=${region.name}, ep=${episode.id}, season=$seasonId, cid=${episode.cid}")
+                log(
+                    "Bangumi MOSS parser request: region=${region.name}, ep=${episode.id}, " +
+                        "season=$requestedSeasonId, cid=${episode.cid}, mapped=${reference != null}, " +
+                        "seasonLookup=$seasonLookup",
+                )
                 val credential = parserCredential(region)
                 val result = BangumiParserClient.requestPlayUrl(
                     region, host, query, credential,
                     classLoader, ModuleSettings.isBangumiServerHttps(prefs, region),
                 )
-                ParserAttempt(region, episode, result.body?.let(::normalizePayload), result.error)
+                log(
+                    "Bangumi MOSS parser result: region=${region.name}, status=${result.httpStatus ?: "transport"}, " +
+                        "contentType=${result.contentType ?: "unknown"}, bytes=${result.byteSize ?: 0}, " +
+                        "json=${result.isJson}, html=${result.isHtml}, " +
+                        "business=${result.businessError ?: "none"}, error=${result.error ?: "none"}",
+                )
+                ParserAttempt(
+                    region,
+                    episode,
+                    result.body?.let(::normalizePayload),
+                    result.error ?: result.businessError,
+                )
             }
         }
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(PARSER_RACE_TIMEOUT_MS)
@@ -310,7 +341,16 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
             if (attempt.payload?.hasPlayableStream() == true) {
                 submitted.forEach { it.cancel(true) }
                 BangumiRegionContext.recordEpisode(attempt.episode.id.toString(), attempt.region)
-                BangumiRegionContext.recordSeason(seasonId.toString(), attempt.region)
+                BangumiRegionContext.recordEpisodeReference(
+                    attempt.episode.id.toString(),
+                    attempt.episode.cid.toString(),
+                    requestedSeasonId.toString(),
+                    attempt.region,
+                    reference?.isMovie == true,
+                )
+                requestedSeasonId.takeIf { it != 0L }?.toString()?.let {
+                    BangumiRegionContext.recordSeason(it, attempt.region)
+                }
                 BangumiRegionContext.activate(attempt.region)
                 log("Bangumi MOSS fallback succeeded: region=${attempt.region.name}, ep=${attempt.episode.id}")
                 return attempt.payload
@@ -326,9 +366,11 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         host: String,
         seasonId: Long,
         requested: Episode,
+        forceLookup: Boolean = false,
+        fallback: Episode? = null,
     ): Episode? {
-        if (requested.id != 0L && requested.cid != 0L) return requested
-        if (seasonId == 0L) return null
+        if (!forceLookup && requested.id != 0L && requested.cid != 0L) return requested
+        if (seasonId == 0L) return fallback ?: requested.takeIf { it.id != 0L && it.cid != 0L }
         log("Bangumi MOSS season lookup: region=${region.name}, season=$seasonId, requestedEp=${requested.id}")
         val result = BangumiParserClient.requestSeason(
             region, host,
@@ -338,8 +380,17 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         )
         val root = result.body?.let { runCatching { JSONObject(it) }.getOrNull() }
             ?: run {
-                log("Bangumi MOSS season lookup rejected: region=${region.name}, transport=${result.error ?: "ok"}")
-                return null
+                log(
+                    "Bangumi MOSS season result: region=${region.name}, status=${result.httpStatus ?: "transport"}, " +
+                        "contentType=${result.contentType ?: "unknown"}, bytes=${result.byteSize ?: 0}, " +
+                        "json=${result.isJson}, html=${result.isHtml}, " +
+                        "business=${result.businessError ?: "none"}, error=${result.error ?: "none"}",
+                )
+                log(
+                    "Bangumi MOSS season lookup rejected: region=${region.name}, " +
+                        "transport=${result.error ?: result.businessError ?: "ok"}",
+                )
+            return fallback
             }
         val season = root.optJSONObject("result") ?: root.optJSONObject("data") ?: root
         val episodes = ArrayList<JSONObject>()
@@ -347,8 +398,9 @@ class BangumiMossPlayUrlHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoaming
         val episode = episodes.firstOrNull { requested.id != 0L && it.optLong("id") == requested.id }
             ?: season.optJSONObject("new_ep")
             ?: episodes.firstOrNull()
-            ?: return null
+            ?: return fallback
         return Episode(episode.optLong("id"), episode.optLong("cid")).takeIf { it.id != 0L && it.cid != 0L }
+            ?: fallback
     }
 
     /**

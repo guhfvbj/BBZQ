@@ -109,8 +109,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -178,4 +178,5 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.protobuf.javalite)
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20250517")
 }

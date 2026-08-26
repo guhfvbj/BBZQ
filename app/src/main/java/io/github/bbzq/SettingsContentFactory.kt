@@ -788,6 +788,29 @@ class SettingsContentFactory(
         ) {
             openPage(SettingsActivity.PAGE_CONFIG_BACKUP)
         }
+        rows += createSwitchRow(
+            context.getString(R.string.debug_log_enabled_title),
+            context.getString(R.string.debug_log_enabled_summary),
+            ModuleSettings.KEY_DEBUG_LOG_ENABLED,
+            false,
+        )
+        rows += createClickableInfoRow(
+            context.getString(R.string.debug_log_title),
+            context.getString(
+                R.string.debug_log_summary,
+                ModuleDebugLog.read(prefs).length,
+            ),
+        ) {
+            showDebugLogDialog()
+        }
+        rows += createClickableInfoRow(
+            context.getString(R.string.regional_search_status_title),
+            ModuleDebugLog.regionalSearchStatus(prefs).ifBlank {
+                context.getString(R.string.regional_search_status_empty)
+            },
+        ) {
+            showRegionalSearchStatusDialog()
+        }
         rows += createClickableInfoRow(
             context.getString(R.string.about_project_repository_title),
             "HSSkyBoy/BBZQ",
@@ -1125,6 +1148,58 @@ class SettingsContentFactory(
                 Toast.makeText(context, context.getString(R.string.access_key_copied_toast), Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(R.string.runtime_environment_ok, null)
+            .show()
+    }
+
+    private fun showDebugLogDialog() {
+        val text = ModuleDebugLog.read(prefs).ifBlank {
+            context.getString(R.string.debug_log_empty)
+        }
+        val content = TextView(context).apply {
+            this.text = text
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextColor(titleTextColor)
+            setTextIsSelectable(true)
+            setPadding(dp(18), dp(12), dp(18), dp(12))
+        }
+        val scroll = ScrollView(context).apply { addView(content) }
+        AlertDialog.Builder(context)
+            .setTitle(R.string.debug_log_title)
+            .setView(scroll)
+            .setPositiveButton(R.string.debug_log_copy) { _, _ ->
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("BBZQ debug log", text))
+                Toast.makeText(context, R.string.debug_log_copied, Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton(R.string.debug_log_share) { _, _ ->
+                runCatching {
+                    context.startActivity(Intent.createChooser(
+                        Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, text)
+                        },
+                        context.getString(R.string.debug_log_share),
+                    ))
+                }.onFailure {
+                    Toast.makeText(context, R.string.open_url_failed_toast, Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton(R.string.debug_log_clear) { _, _ ->
+                ModuleDebugLog.clear(prefs)
+                Toast.makeText(context, R.string.debug_log_cleared, Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun showRegionalSearchStatusDialog() {
+        val status = ModuleDebugLog.regionalSearchStatus(prefs).ifBlank {
+            context.getString(R.string.regional_search_status_empty)
+        }
+        AlertDialog.Builder(context)
+            .setTitle(R.string.regional_search_status_title)
+            .setMessage(status)
+            .setPositiveButton(R.string.runtime_environment_ok, null)
             .show()
     }
 

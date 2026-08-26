@@ -65,6 +65,21 @@ object ModuleRemotePreferences : XposedServiceHelper.OnServiceListener {
         }
     }
 
+    /** Reads a value from the host-side preference store when it is available. */
+    fun readString(key: String, fallback: String = ""): String {
+        val currentService = service ?: return fallback
+        return runCatching {
+            currentService.remoteSettingsPreferences().getString(key, "").orEmpty()
+        }.getOrElse {
+            Log.w(TAG, "read remote preference failed: ${it.javaClass.simpleName}: ${it.message}")
+            fallback
+        }
+    }
+
+    fun remove(key: String) {
+        withRemoteEditor { editor -> editor.remove(key) }
+    }
+
     fun requestSymbolCacheRefresh(callback: (String) -> Unit) {
         requestSymbolCacheRefresh(callback, serviceWaitAttempt = 0)
     }
