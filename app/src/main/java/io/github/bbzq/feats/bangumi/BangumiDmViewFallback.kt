@@ -39,6 +39,16 @@ internal object BangumiDmViewFallback {
         } else {
             null
         }
+
+        // Debug: Log the original request details
+        if (methodName == "dmView" && parsedDmView != null) {
+            android.util.Log.d(
+                "BBZQ-DmView",
+                "Original DmView request: pid=${parsedDmView.pid}, oid=${parsedDmView.oid}, " +
+                    "type=${parsedDmView.type}, spmid=${parsedDmView.spmid}"
+            )
+        }
+
         val reflectedEpisodeId = request.number("getPid", "getEpId", "getEpisodeId", "getAid", "getObjectId")
         val reflectedContentId = if (methodName == "dmView") {
             request.number("getOid", "getCid", "getContentId")
@@ -78,6 +88,17 @@ internal object BangumiDmViewFallback {
         }
         val body = augmentedBody ?: originalBody
         val augmented = augmentedBody != null
+
+        // Debug: Log the final request body being sent
+        if (methodName == "dmView") {
+            val finalRequest = runCatching { DmViewRequest.parseFrom(body) }.getOrNull()
+            android.util.Log.d(
+                "BBZQ-DmView",
+                "Final DmView request to send: pid=${finalRequest?.pid}, oid=${finalRequest?.oid}, " +
+                    "type=${finalRequest?.type}, augmented=$augmented, bodySize=${body.size}"
+            )
+        }
+
         val regions = BangumiRegionContext.candidates(identity.episodeId, identity.seasonId, identity.cid)
         val attempts = ExecutorCompletionService<Response?>(executor)
         val submitted = regions.mapNotNull { region ->
@@ -93,6 +114,27 @@ internal object BangumiDmViewFallback {
                 )
                 val hasSubtitle = methodName == "dmView" &&
                     result?.let { BangumiSubtitleModel.hasSubtitleTrack(it) } == true
+
+                // Debug: Parse and log the response details
+                if (methodName == "dmView" && result != null) {
+                    runCatching {
+                        val reply = io.github.bbzq.proto.DmViewReply.parseFrom(result)
+                        android.util.Log.d(
+                            "BBZQ-DmView",
+                            "DmView response details: region=${region.name}, " +
+                                "hasSubtitleField=${reply.hasSubtitle()}, " +
+                                "subtitleCount=${if (reply.hasSubtitle()) reply.subtitle.subtitlesCount else 0}, " +
+                                "responseBytes=${result.size}"
+                        )
+                        if (reply.hasSubtitle() && reply.subtitle.subtitlesCount > 0) {
+                            val subtitleList = reply.subtitle.subtitlesList.joinToString(", ") {
+                                "${it.lan}(${it.lanDoc})"
+                            }
+                            android.util.Log.d("BBZQ-DmView", "Available subtitles: $subtitleList")
+                        }
+                    }
+                }
+
                 log(
                     "Bangumi DmView fallback: source=$source, region=${region.name}, " +
                         "requestBytes=${body.size}, responseBytes=${result?.size ?: 0}, " +
@@ -110,11 +152,30 @@ internal object BangumiDmViewFallback {
             val attempt = runCatching {
                 attempts.poll(remaining, TimeUnit.NANOSECONDS)?.get()
             }.getOrNull() ?: return@repeat
-            if (attempt.payload.isEmpty()) return@repeat
-            if (methodName == "dmView" && !attempt.hasSubtitle) return@repeat
+            if (attempt.payload.isEmpty()) {
+                android.util.Log.d("BBZQ-DmView", "Rejecting empty response from ${attempt.region.name}")
+                return@repeat
+            }
+            if (methodName == "dmView" && !attempt.hasSubtitle) {
+                android.util.Log.w(
+                    "BBZQ-DmView",
+                    "Rejecting response without subtitles from ${attempt.region.name}, " +
+                        "continuing to wait for other regions..."
+                )
+                return@repeat
+            }
+            android.util.Log.i(
+                "BBZQ-DmView",
+                "Accepting response from ${attempt.region.name}: " +
+                    "hasSubtitle=${attempt.hasSubtitle}, bytes=${attempt.payload.size}"
+            )
             submitted.forEach { it.cancel(true) }
             return attempt
         }
+        android.util.Log.w(
+            "BBZQ-DmView",
+            "All ${submitted.size} regions timed out or rejected. Returning null."
+        )
         submitted.forEach { it.cancel(true) }
         return null
     }
@@ -140,11 +201,21 @@ internal object BangumiDmViewFallback {
         // DmView silently omits the subtitle block when type is absent. The
         // host often sends a zero-valued request for unlocked PGC playback,
         // so normalize it before forwarding to the regional endpoint.
+        val originalType = request.type
         if (request.type == 0) {
             builder.setType(1)
             changed = true
         }
-        return if (changed) builder.build().toByteArray() else null
+        val result = if (changed) builder.build().toByteArray() else null
+        android.util.Log.d(
+            "BBZQ-DmView",
+            "augmentDmViewRequest: episodeId=$episodeId, cid=$cid, " +
+                "originalType=$originalType, finalType=${if (changed) 1 else originalType}, " +
+                "originalPid=${request.pid}, finalPid=$episodeId, " +
+                "originalOid=${request.oid}, finalOid=${if (cid > 0L) cid else request.oid}, " +
+                "changed=$changed"
+        )
+        return result
     }
 
     private fun Any.number(vararg names: String): Long = names.firstNotNullOfOrNull { name ->
